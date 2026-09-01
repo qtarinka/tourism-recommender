@@ -1,0 +1,478 @@
+# Development Documentation — Tourism Outbound Trip Decision Support System
+
+This documents the actual implementation built from the thesis's "Dokumentacja
+Implementacyjna" (chapters 3–7), plus features added beyond the original
+scope: a runtime English/Polish language switch, and a visual redesign with
+real destination landmark photos. Where the implementation deviates from
+what the thesis chapters specify, it's called out explicitly below with the
+reasoning, rather than silently diverging.
+
+## 1. Scope recap (from the source thesis document)
+
+- **Users**: individual tourists (get a scored recommendation + can compare
+  destinations) and an admin (maintains the seasonal-risk reference data
+  behind a password).
+- **Core deliverable**: a scored recommendation across a fixed dictionary of
+  20 destinations (17 European + 3 non-European), a side-by-side comparison
+  view, and contextual data (NBP rates, MSZ warnings, GUS trip-organization
+  stats), all inside a Streamlit app backed by a relational database.
+- **Non-functional targets**: <2s response time, responsive UI, unattended
+  ETL via a task scheduler, password-gated admin panel.
+
+## 2. Architecture
+
+```
+tourism-recommender/
+├── app.py                  # Streamlit entrypoint  (streamlit run app.py)
+├── scheduler.py             # ETL entrypoint        (python scheduler.py)
+├── schema.sql                # PostgreSQL DDL (parity reference; SQLite auto-creates the same schema)
+├── requirements.txt
+├── .env.example
+├── .streamlit/config.toml     # Theme colors (native Streamlit widget theming)
+├── core/
+│   ├── db.py                 # SQLAlchemy models + engine (SQLite by default, Postgres via DATABASE_URL)
+│   ├── seed_data.py           # 20-destination dictionary + reference GUS/seasonal-risk data
+│   ├── scoring.py              # Recommendation algorithm
+│   ├── etl.py                   # Live NBP rates + best-effort MSZ warnings refresh
+│   ├── i18n.py                   # EN/PL string tables + t() helper
+│   ├── images.py                  # Wikipedia landmark photo lookup (hero, cards, gallery)
+│   └── theme.py                    # Custom CSS (hero banner, card hover, photo placeholders)
+├── tests/
+│   ├── test_seed_data.py
+│   ├── test_scoring.py
+│   ├── test_etl.py
+│   └── test_app_integration.py    # Streamlit AppTest-based smoke tests
+└── docs/
+    └── DEVELOPMENT_DOCUMENTATION.md  (this file)
+```
+
+**Stack**: Python 3.12, Streamlit, SQLAlchemy 2.x (ORM, not raw SQL — this is
+what makes the SQLite/PostgreSQL swap a one-line config change), `requests`
+for NBP, `feedparser` for the MSZ RSS feed, `python-dotenv` for config.
+
+## 3. Deliberate deviations from the thesis spec (and why)
+
+| Area | Thesis spec | What's implemented | Why |
+|---|---|---|---|
+| Database | PostgreSQL | **Real PostgreSQL** (matches the thesis exactly) — SQLite remains the zero-config fallback if `DATABASE_URL` is unset | Started on SQLite for a zero-install first pass, then switched to an actual local PostgreSQL 18 instance once requested — see §8a for exactly how. Same SQLAlchemy models either way, no code changes needed to switch. |
+| GUS statistics | "GUS API" implied | **Seeded reference values** in `core/seed_data.py` | GUS's public BDL API doesn't expose the specific "organized vs. individual trips by destination country" breakdown the thesis describes at a queryable per-country level. Building a full scraper for a metric that isn't cleanly available wasn't worth the fragility; the numbers are illustrative and match the thesis's narrative (e.g. Egypt/Tunisia/Turkey skew organized, Czechia/Austria/Germany/Croatia skew individual). |
+| MSZ warnings | "RSS feed, 4-level scale" | **Live fetch attempted, with a documented fallback** | I could not find a stable, documented MSZ RSS feed with a machine-readable 1–4 level during implementation (see `core/etl.py` docstring). `MSZ_RSS_URL` is left as a `.env` setting: if you find/confirm the real feed URL, set it and the ETL will parse it (matching by country name in the entry title, defaulting matched entries to level 2 pending real level data). If unset, existing/seed data is kept rather than the app pretending to have live data it doesn't. |
+| Power BI | Embedded Power BI Service report via iframe | **A clickable "Open Power BI dashboard" link** (`POWERBI_REPORT_URL` in `.env`), not an iframe | See §6 for the full story — the university tenant blocks "Publish to web" (needs an admin), and true secure embedding needs an Azure app registration (real infra, out of scope). A direct link to the report works around both: opening it just requires being signed in to Power BI, which is fine for a personal thesis demo. |
+| Budget input | A form input in the thesis, not part of the scoring formula | **Removed entirely** (DB column, seed data, UI) — on request | Was a filter on `avg_daily_cost_pln`, an estimate with no cited basis when first built. Rather than keep patching a field the user didn't want, it was removed end to end — no dead column, no dead seed values, no dead UI. |
+| GUS organized-trip-share display | Chart/table of `organized_share_pct` | **Removed from the UI** — on request | The underlying `gus_tourism_stats.organized_share_pct`/`individual_share_pct` columns are kept (matches thesis chapter 4.1's data model, and still feeds the Power BI report), but no longer rendered anywhere in the Streamlit app — a seeded stat displayed like a live one was misleading. |
+| MSZ advisory text | Real MSZ-style wording | **Rewritten to sound like an actual advisory**, not an app implementation note | The original seed fallback text read "No live data yet - run scheduler.py" — a dev-facing message a real user has no reason to see. Replaced with proper MSZ level-1 wording ("Exercise normal precautions..."), and a dedicated caption now explains what the 4-level MSZ scale actually means. |
+| Language | Polish only (implied) | **EN/PL switcher in the sidebar** (`core/i18n.py`) | Requested addition beyond the thesis scope. |
+| Destination photos | Not in scope | **Multiple real landmark photos per destination**, viewable in-app (`core/images.py`) | Requested addition — see §3b and §7. |
+
+### 3a. `avg_daily_cost_pln` — history, now removed
+
+This field went through two revisions before being removed entirely.
+Originally it was a set of numbers estimated with no cited basis — a real
+gap, not a rounding error. It was then rebuilt on an actual source
+(MyFunkyTravel's backpacker country cost table, 16/20 destinations sourced
+directly, 4 interpolated and flagged, converted USD→PLN at the live NBP
+rate) and surfaced in the UI with a caption explaining the methodology.
+Even sourced, though, it was still a coarse, illustrative estimate being
+used to filter real recommendations — and once that was pointed out, the
+right call was to remove it rather than keep refining a field that wasn't
+wanted, rather than leave a half-used budget concept lying around the
+codebase. It no longer exists anywhere: not in `core/db.py`'s model, not in
+`core/seed_data.py`, not in `schema.sql`, not in the UI.
+
+### 3b. `organized_share_pct` — kept in the data model, removed from the UI
+
+This is the share of trips to a destination that are booked through a
+travel agency/tour operator, as opposed to arranged independently — the
+same distinction the thesis's GUS section describes. It's seeded reference
+data inspired by that GUS statistic, not a live GUS API feed (GUS's public
+BDL API doesn't expose this breakdown per destination country in a
+queryable form). On request, this is no longer displayed anywhere in the
+Streamlit app (previously a bar chart + a comparison-table column) — a
+seeded stat presented like a live one was misleading. The underlying
+`gus_tourism_stats.organized_share_pct`/`individual_share_pct` columns are
+still there, still populated, and still match the thesis's chapter 4.1 data
+model — they're what the actual Power BI report (§6) charts, which is now
+the one place in the whole project this statistic is visible.
+
+## 4. Scoring algorithm
+
+```
+Score = trip_length_match + seasonal_risk_match + msz_status_match   (0–3)
+```
+
+- `trip_length_match`: 1 if `|user.trip_length_days - destination.avg_stay_length_days| <= 2`, else 0.
+- `seasonal_risk_match`: 1 if none of the destination's seasonal risks *for the
+  selected travel month* exceed the user's risk tolerance (low→severity 1,
+  medium→severity 2, high→severity 3), else 0.
+- `msz_status_match`: 1 if the destination's current MSZ warning level is at
+  or below the tolerance-mapped threshold (low→1, medium→2, high→3), else 0.
+
+Currency rate and organization style are shown as context only and never
+enter the score, matching the thesis's explicit statement that these two
+inputs are decision context rather than scored criteria.
+
+## 5. Data model
+
+Five tables, matching the thesis's chapter 4.1 structure: `destinations`,
+`gus_tourism_stats`, `msz_safety_warnings`, `seasonal_risks`,
+`currency_rates` — all FK'd back to `destinations.destination_id`. See
+`schema.sql` for the full DDL, or `core/db.py` for the SQLAlchemy source of
+truth. User-facing text fields (destination/country names, risk types,
+MSZ messages) carry parallel `_en`/`_pl` columns rather than a separate
+translation table, since the dictionary is small and fixed-size (20 rows).
+
+## 6. Power BI report setup (done — link-based, not embedded)
+
+The thesis calls for embedding a real Power BI Service report. I can't
+create the account, log in, or publish on the user's behalf (that needs
+their personal Microsoft/university credentials) — so this was done as a
+live collaborative session: I opened Power BI in a browser and drove the
+report-building UI; the user handled every step that touched their login or
+their account's permissions.
+
+**What was actually built**: a report ("Gus_report") in the user's own
+Power BI workspace. It went through two revisions:
+
+1. **First pass (SQLite era)**: built from a one-time CSV export of
+   `gus_tourism_stats`, uploaded via Power BI's "Upload a file" flow — a
+   static snapshot with no ongoing connection to the app's database at all.
+2. **Second pass (after switching to Postgres, §8a)**: rebuilt as a genuine
+   **live connection**. Installed Power BI Desktop (via Microsoft Store —
+   I can't drive its UI the way I could the browser-based Service, since
+   it's a native app with no browser automation surface, so this leg was
+   guided step-by-step from user-provided screenshots), connected directly
+   to `localhost:5432` / `tourism_recommender` using Power BI's built-in
+   PostgreSQL connector with the `tourism_app` role's credentials, loaded
+   the `destinations` and `gus_tourism_stats` tables (Power BI auto-detected
+   the `destination_id` relationship between them), rebuilt the same
+   clustered-bar chart, then republished from Desktop to the **same
+   workspace with the same report name** — Power BI offered to replace the
+   existing report in place, which kept the exact same report URL/ID
+   (`df1c2c08-79aa-4dbb-b094-5f7a511833b1`), so `POWERBI_REPORT_URL` in
+   `.env` needed no changes. Verified afterward by reloading the report
+   directly and re-clicking the app's link button — both show the
+   Postgres-sourced chart. The chart is a clustered bar of
+   `organized_share_pct` by `destination`, sorted descending — it
+   reproduces the exact same "Egypt/Tunisia/Turkey skew organized" pattern
+   the thesis describes in chapter 6.3.
+
+**What "live" actually means here** — worth being precise about, since it's
+a common point of confusion: Power BI **Desktop** refreshing (or
+re-publishing) pulls current data straight from Postgres over
+`localhost:5432` — genuinely live, no gateway needed, because Desktop runs
+locally and can reach `localhost` directly. The **published Service copy**
+(what the app's link button opens) is a snapshot as of whenever it was last
+published from Desktop — visiting the link does *not* re-query Postgres on
+page load. Getting the Service copy to auto-refresh on a schedule would
+need an **On-premises Data Gateway** installed and registered with the
+tenant (real infrastructure, not set up here — the only two things that are
+editable in this whole system are seasonal risks via the admin panel, which
+this chart doesn't even chart, so in practice this gap rarely matters). To
+manually push a DB change through: refresh in Desktop, then re-publish
+(same replace-in-place flow as above).
+
+**Why it's a link, not an iframe** — two real walls, in order:
+1. **"Publish to web (public)"** is disabled at the tenant level for this
+   university's Power BI admin (a common institutional data-governance
+   setting) — got "Contact your admin to enable embed code creation."
+   Not something a student account can override.
+2. **"Website or portal"** embed (the authenticated alternative) routes
+   through Power BI **Embedded**'s developer playground, which needs an
+   actual Azure AD app registration (client ID/secret, token generation) to
+   produce a working embed — real infrastructure, not a form to fill in.
+   Out of scope for what this needed to accomplish.
+
+**The actual solution**: `app.py`'s Contextual data tab renders a
+`st.link_button` pointed at `POWERBI_REPORT_URL` from `.env` — the report's
+normal `app.powerbi.com/groups/.../reports/...` URL. Clicking it opens the
+real, live, interactive report in a new tab. The only requirement is being
+signed in to Power BI in that browser — true for the user running their own
+local app, so this is a complete, working solution for the actual use case,
+just not a same-page embed. If `POWERBI_REPORT_URL` is unset, the button is
+replaced with a warning instead of showing nothing.
+
+To point this at a different report later: open it in Power BI Service,
+copy the URL from the address bar (or use Share → Copy link), and set
+`POWERBI_REPORT_URL=<that URL>` in `.env`, then restart the app (env vars
+are only read at process start).
+
+## 7. Images & visual redesign
+
+Beyond the thesis scope: a full visual pass plus real photos of each
+destination's most recognizable landmark (Eiffel Tower for France, Colosseum
+for Italy, etc. — full list in `core/images.py`'s `LANDMARKS` dict).
+
+- **Source**: Wikipedia's public MediaWiki Action API
+  (`action=query&prop=pageimages`) — no API key, no account, nothing for you
+  to sign up for. Images are hotlinked from Wikimedia's CDN, never
+  downloaded into this repo.
+- **Licensing**: Commons images are almost all CC BY-SA or public domain.
+  Every photo in the app renders an attribution caption underneath
+  ("Zdjęcie: <landmark> — Wikipedia", linking to the source page) to satisfy
+  CC BY-SA's attribution requirement. For a real public deployment, pulling
+  the actual author/license per image from the Commons API would be more
+  rigorous than this good-faith attribution — flagged honestly rather than
+  overclaiming full compliance.
+- **Caching**: `st.cache_data(ttl=24h)` avoids re-fetching the same
+  landmark's metadata on every Streamlit rerun (which happens on every
+  widget interaction). Failures (offline, rate-limited, timeout) are *not*
+  cached — only genuine successes are — so a transient failure doesn't lock
+  in a "no photo" result for 24 hours (see the bug log in §10).
+- **Fallback**: if a photo can't be fetched, `render_photo()` in `app.py`
+  shows a gradient placeholder with the destination's name instead of a
+  broken image — used on the hero banner, recommendation cards, the
+  comparison tab's photo strip, and the full 20-destination gallery in the
+  Contextual data tab.
+- **Theming**: `.streamlit/config.toml` sets Streamlit's native widget
+  theme (a warm off-white/coral palette); `core/theme.py` adds the custom
+  CSS Streamlit's theme system can't reach — the hero banner, card hover-lift
+  effect, and fixed-height photo cropping so grid rows line up evenly
+  despite each landmark photo having a different native aspect ratio.
+
+## 8. Setup & running
+
+```powershell
+cd tourism-recommender
+python -m venv .venv
+.\.venv\Scripts\pip install -r requirements.txt
+copy .env.example .env      # then edit ADMIN_PASSWORD at minimum
+.\.venv\Scripts\streamlit run app.py
+```
+
+First run auto-creates and seeds the database (SQLite at `data/app.db` by
+default) — no manual migration step needed for the default setup.
+
+### 8a. Switching to PostgreSQL (what this project actually runs on)
+
+This app currently runs against a real local PostgreSQL 18 instance, not
+SQLite. To set that up from scratch:
+
+1. Install PostgreSQL (the user did this manually via the official
+   installer this round). Note the superuser password you set during
+   install.
+2. Create a dedicated role and database for the app — don't reuse the
+   `postgres` superuser account directly:
+   ```powershell
+   $env:PGPASSWORD = "<your postgres superuser password>"
+   $psql = "C:\Program Files\PostgreSQL\<version>\bin\psql.exe"
+   & $psql -U postgres -h localhost -p 5432 -c "CREATE ROLE tourism_app WITH LOGIN PASSWORD 'tourism_app_pw';"
+   & $psql -U postgres -h localhost -p 5432 -c "CREATE DATABASE tourism_recommender OWNER tourism_app;"
+   & $psql -U postgres -h localhost -p 5432 -d tourism_recommender -c "GRANT ALL PRIVILEGES ON SCHEMA public TO tourism_app;"
+   ```
+3. Set `DATABASE_URL` in `.env`:
+   ```
+   DATABASE_URL=postgresql+psycopg2://tourism_app:tourism_app_pw@localhost:5432/tourism_recommender
+   ```
+4. Run `python scheduler.py` (or start the app) — `init_db()` calls
+   `Base.metadata.create_all(engine)`, which creates all 5 tables against
+   Postgres automatically; no need to run `schema.sql` by hand unless you
+   want to inspect/adjust the DDL first (it's kept as an exact parity
+   reference). `seed_if_empty()` then populates the 20-destination
+   dictionary the same way it does on SQLite.
+
+**A note on `psql` output encoding**: on Windows, `psql`'s console output
+may show mangled non-ASCII characters (e.g. table headers) in some
+terminals — this is a client-side code-page display issue, not a data
+problem; the actual stored data is correct UTF-8.
+
+**Unrelated discovery worth knowing about**: while setting this up, we
+found a pre-existing PostgreSQL 17 *data directory* at
+`C:\Program Files\PostgreSQL\17\data` with real historical data (logs
+from September 2025 through January 2026) but no server binaries, no
+Windows service, and nothing running — looks like PostgreSQL was
+uninstalled at some point without removing its data. That directory was
+left completely untouched; this project's database lives in a fresh
+PostgreSQL 18 instance instead. If that old data matters, it would need
+its own investigation (what created it, whether it's recoverable) — out of
+scope for this project.
+
+**ETL / unattended refresh** (currency rates + best-effort MSZ warnings):
+
+```powershell
+.\.venv\Scripts\python scheduler.py
+```
+
+Register this as a Windows Task Scheduler action (rather than an in-process
+loop) to match the thesis's "harmonogram zadań" design:
+
+```
+schtasks /create /tn "TourismAppETL" /tr "C:\path\to\.venv\Scripts\python.exe C:\path\to\scheduler.py" /sc daily /st 06:00
+```
+
+## 9. Testing
+
+```powershell
+.\.venv\Scripts\pytest -v
+```
+
+- `test_seed_data.py` — verifies the 20-destination / 17+3 split and that
+  every destination has GUS stats, an MSZ warning row, and a currency rate row.
+- `test_scoring.py` — trip-length tolerance boundaries, risk-tolerance
+  mapping for both MSZ and seasonal risk, score = sum of the three
+  components, and extreme inputs (365-day trip, max severity, max MSZ level)
+  don't crash and correctly score 0.
+- `test_etl.py` — NBP table-A/table-B fallback, unreachable-network handling,
+  PLN short-circuit, and that an unset `MSZ_RSS_URL` is a safe no-op.
+- `test_app_integration.py` — runs the real `app.py` headlessly via
+  Streamlit's `AppTest` harness, asserts it renders without exceptions, that
+  the language switch actually changes rendered text, and all 5 tabs render.
+
+## 10. Verification performed during development
+
+Beyond the automated suite, the running app was manually exercised end to
+end in a real Chrome browser session against a fresh SQLite database:
+
+- Recommendation form → ranking: submitting default preferences correctly
+  scored and ranked Austria/Bulgaria/Croatia at 3/3.
+- Language switch: toggling PL → EN in the sidebar re-rendered every label,
+  the page title, destination names, and the footer, with no page reload.
+- Comparison table: selecting Czechia + Egypt showed the expected contrast
+  (18% vs. 78% organized-trip share), each column (currency, rate, avg. cost,
+  avg. stay, MSZ level/message, seasonal risk) populated correctly.
+- **Bug found and fixed**: the GUS bar chart (`st.bar_chart`) was initially
+  fed a plain `{name: value}` dict, which Streamlit/Vega-Lite silently
+  failed to render (console showed "Infinite extent" warnings, empty chart).
+  Fixed by building a proper `pandas.DataFrame` indexed by destination name
+  before charting (`app.py`, Contextual data tab). Re-verified visually —
+  the chart now correctly shows Egypt/Tunisia/Turkey with the highest
+  organized-trip share, matching the thesis's own stated findings (§6.3).
+- Admin panel: password login, and a full add → verify → delete cycle on
+  the seasonal-risks table, both confirmed against the live SQLite DB.
+- ETL: `python scheduler.py` was run for real against the live NBP API —
+  successfully fetched rates for all 20 destinations (including the table-A
+  → table-B fallback for EGP and TND), and correctly logged a no-op skip
+  for the MSZ refresh since `MSZ_RSS_URL` is unset by default.
+
+### Second pass: images, redesign, and cost-data rework
+
+- **Bug found and fixed — Wikimedia thumbnail 400s.** The first `core/images.py`
+  used Wikipedia's REST `/page/summary` endpoint and hand-edited the returned
+  thumbnail URL's embedded width (e.g. swapping `330px-` for `640px-`) to get
+  a bigger image. Every single one of those requests came back `400 Bad
+  Request` from `upload.wikimedia.org` — verified directly with `curl`-style
+  requests outside the app. Root cause: the CDN validates the requested width
+  against the API-issued cache key; a hand-edited width doesn't match it.
+  Fixed by switching to the MediaWiki Action API
+  (`action=query&prop=pageimages&pithumbsize=N`), which lets you request an
+  exact size properly and returns a URL the CDN actually honors — confirmed
+  working end to end (200, real image bytes) before wiring it into the app.
+- **Bug found and fixed — failed fetches cached as permanent.** `st.cache_data`
+  caches whatever a function returns, including `None` from a transient
+  failure. The gallery's first live run (20 near-simultaneous requests) hit
+  what looked like transient rate-limiting, and every destination's `None`
+  result got cached for the full 24h TTL, leaving every photo on placeholders
+  even after the network recovered. Fixed by having the cached inner function
+  raise on failure instead of returning `None` — `st.cache_data` doesn't
+  cache exceptions, so only genuine successes get cached and failures retry
+  next call.
+- **Bug found and fixed — `DATABASE_URL=` (empty) crashed the app.**
+  `core/db.py` used `os.environ.get("DATABASE_URL", <sqlite default>)`,
+  which only falls back when the var is *unset* — but the `.env` file sets
+  it to `""`, a var that *is* set. Compounding this, `app.py` imported
+  `core.db` (which reads that var at module-import time) *before* calling
+  `load_dotenv()`, so it worked by accident on a cold process start (the var
+  genuinely wasn't set yet) and only broke once Streamlit's dev-mode file
+  watcher re-imported `core.db` later in the same process's life, after
+  `load_dotenv()` had already populated `os.environ["DATABASE_URL"] = ""`.
+  Fixed both: `load_dotenv()` now runs before any `core.*` import, and
+  `core/db.py` uses `os.environ.get("DATABASE_URL") or <default>` so an
+  empty value is treated the same as unset either way.
+- **Bug found and fixed — gallery captions read as belonging to the wrong
+  photo.** The destination-name label was rendered *below* each photo (as a
+  caption). The data pairing was actually correct in code, but visually the
+  name sat closer to the *next* row's photo than its own (Streamlit's
+  per-element spacing), making the whole 20-photo gallery look mislabeled at
+  a glance. Fixed by rendering the name *above* each photo as a header
+  instead — removes the ambiguity entirely, verified visually row by row.
+- Re-verified after all four fixes: hero banner, recommendation cards,
+  comparison tab photo strip, and the full 20-photo gallery all render
+  correctly, correctly attributed, correctly paired, in both languages.
+- `avg_daily_cost_pln` was rebuilt from an actual cited source (see §3a)
+  after the original placeholder values were correctly flagged as having no
+  stated basis — before being removed entirely in the next revision.
+
+### Third pass: removals, MSZ clarity, multi-photo, Power BI, form redesign
+
+- **Bug found and fixed — lazy photo loading wasn't actually lazy.** The
+  first version of the multi-photo "explore" gallery put
+  `get_destination_photos(...)` inside an `st.expander`, assuming collapsed
+  expanders don't execute their body. They do — Streamlit only hides the
+  DOM, it doesn't skip the code. That meant every single script rerun
+  (triggered by *any* widget interaction anywhere in the app) fired up to
+  60 extra Wikipedia API calls for all 20 destinations' hidden photos, on
+  top of the ~20 already needed for the visible cards. Caught by
+  `test_app_runs_without_exceptions` timing out at 30s instead of its
+  normal ~2-5s. Fixed by replacing the expander with a plain button that
+  toggles an `st.session_state` flag, and only calling
+  `get_destination_photos` when that flag is actually set — genuinely
+  fetches only on click, verified by re-running the full suite (back to
+  normal timing) and confirming the button correctly reveals 3 photos per
+  destination in the browser.
+- Verified the transient-failure/permanent-cache fix from the second pass
+  is durable: reloaded the gallery cold, saw a handful of destinations on
+  placeholders (real Wikipedia rate-limiting, not a bug — confirmed by
+  calling `get_landmark_image` directly outside Streamlit and getting a
+  correct result), reloaded again a few seconds later, all photos loaded.
+- Confirmed in the browser: budget slider and its caption are fully gone
+  from the sidebar; the GUS bar chart/caption and the comparison table's
+  organized-share column are gone from their tabs; the MSZ explanation
+  caption renders correctly in both Contextual data and Comparison tabs;
+  the redesigned segmented-pill preference controls and gallery work in
+  both languages; the "How it works" tab renders.
+- Power BI: built and verified an actual live report in the user's real
+  workspace (not a mock) — see §6 for the two blockers hit (tenant-disabled
+  public publish, Embedded's Azure-registration requirement) and the
+  link-based resolution. Confirmed the `st.link_button` opens the correct
+  report URL in a new tab.
+
+### Fourth pass: switching to real PostgreSQL
+
+- **Bug found and fixed — `scheduler.py` silently never used Postgres.**
+  After creating the dedicated `tourism_app` role/database and setting
+  `DATABASE_URL` in `.env`, running `python scheduler.py` reported success
+  ("Currency rates refreshed for 20 destinations") — but querying Postgres
+  directly with `psql` showed zero tables. Root cause: unlike `app.py`
+  (fixed for this exact class of bug earlier — see the second-pass bug
+  log), `scheduler.py` never called `load_dotenv()` at all, so
+  `core.db`'s module-level `os.environ.get("DATABASE_URL")` read nothing
+  and silently fell back to SQLite — the script was refreshing the old
+  SQLite file the whole time while claiming to work. Fixed by adding the
+  same `load_dotenv()`-before-`core.db`-import pattern to `scheduler.py`.
+  Re-ran it, got "Database was empty -- seeded with reference destination
+  data" (the real tell that it was actually a fresh Postgres DB this time),
+  then verified directly with `psql`: 5 tables, 20 destinations, live NBP
+  rates, all correct.
+- Verified the admin login and the full app UI load correctly against
+  Postgres in the browser, and cross-checked `seasonal_risks` row count
+  (7, matching the seed data) directly via `psql`.
+- Full test suite re-run and still green — the test suite uses its own
+  isolated in-memory SQLite fixture (`tests/conftest.py`), independent of
+  `.env`'s `DATABASE_URL`, so switching the app's real database doesn't
+  and shouldn't change test behavior.
+
+## 11. Known limitations
+
+- GUS figures (`organized_share_pct`/`individual_share_pct`) are seeded
+  reference values, not a live feed (see §3b) — no longer shown in the
+  Streamlit app itself, but still exist in the DB and feed the Power BI
+  report.
+- MSZ warning levels default to "2" for any live-matched entry until the
+  real feed's level encoding is confirmed and `core/etl.py`'s parsing logic
+  is refined against it (this only applies once `MSZ_RSS_URL` is actually
+  set — the seed/fallback level-1 text is real MSZ wording, not a
+  placeholder).
+- Power BI is a link to the real report, not a same-page embed — see §6
+  for exactly why, and what it would take to change that (a tenant admin
+  enabling public publish, or an Azure app registration for secure
+  embedding).
+- Destination dictionary is a fixed set of 20 (matches thesis scope, chapter
+  7.3's own stated limitation).
+- Photos require internet access at runtime (Wikipedia API) and are not
+  bundled with the app; offline, every photo falls back to the gradient
+  placeholder rather than failing — by design, but worth knowing before a
+  fully offline demo.
+- The `tourism_app` PostgreSQL role's password (`tourism_app_pw`, set in
+  `.env`'s `DATABASE_URL`) is a plain local-dev credential, not something
+  hardened for any shared/production use — fine for localhost-only access
+  as set up here, but change it if this database ever needs to be reachable
+  from anywhere else.
