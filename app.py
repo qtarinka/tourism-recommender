@@ -21,6 +21,22 @@ from streamlit_authenticator.utilities.exceptions import LoginError
 # first or that read sees an unset var even though .env defines it.
 load_dotenv()
 
+# Streamlit Community Cloud has no .env file -- it injects config via
+# st.secrets instead. Every config read in this codebase goes through
+# plain os.environ.get(...) (DATABASE_URL, ADMIN_PASSWORD, etc.), so
+# rather than rewriting every one of those call sites for a second config
+# source, this copies whatever Streamlit Cloud put in st.secrets into
+# os.environ once, at startup -- the existing os.environ.get(...) calls
+# then work unchanged on both platforms. setdefault (not direct
+# assignment) means a real local .env value always wins if both happen to
+# be present. st.secrets raises when no secrets.toml exists at all, which
+# is the normal case for local dev, so this is expected to no-op there.
+try:
+    for _secret_key, _secret_value in st.secrets.items():
+        os.environ.setdefault(_secret_key, str(_secret_value))
+except Exception:
+    pass
+
 from core.db import init_db, get_session, Destination, SeasonalRisk
 from core.seed_data import seed_if_empty
 from core.i18n import t, month_name, LANGUAGES
