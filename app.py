@@ -33,11 +33,11 @@ load_dotenv()
 # is the normal case for local dev, so this is expected to no-op there.
 _SECRETS_DEBUG = "not attempted"
 try:
-    _n = 0
+    _keys_seen = []
     for _secret_key, _secret_value in st.secrets.items():
-        os.environ.setdefault(_secret_key, str(_secret_value))
-        _n += 1
-    _SECRETS_DEBUG = f"ok, {_n} keys, DATABASE_URL in os.environ: {'DATABASE_URL' in os.environ}"
+        os.environ[_secret_key] = str(_secret_value)
+        _keys_seen.append(repr(_secret_key))
+    _SECRETS_DEBUG = f"keys={_keys_seen}, DATABASE_URL in os.environ: {'DATABASE_URL' in os.environ}"
 except Exception as _secrets_exc:
     _SECRETS_DEBUG = f"EXCEPTION: {type(_secrets_exc).__name__}: {_secrets_exc}"
 
