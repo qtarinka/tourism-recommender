@@ -31,15 +31,11 @@ load_dotenv()
 # assignment) means a real local .env value always wins if both happen to
 # be present. st.secrets raises when no secrets.toml exists at all, which
 # is the normal case for local dev, so this is expected to no-op there.
-_SECRETS_DEBUG = "not attempted"
 try:
-    _keys_seen = []
     for _secret_key, _secret_value in st.secrets.items():
-        os.environ[_secret_key] = str(_secret_value)
-        _keys_seen.append(repr(_secret_key))
-    _SECRETS_DEBUG = f"keys={_keys_seen}, DATABASE_URL in os.environ: {'DATABASE_URL' in os.environ}"
-except Exception as _secrets_exc:
-    _SECRETS_DEBUG = f"EXCEPTION: {type(_secrets_exc).__name__}: {_secrets_exc}"
+        os.environ.setdefault(_secret_key, str(_secret_value))
+except Exception:
+    pass
 
 from core.db import init_db, get_session, Destination, SeasonalRisk
 from core.seed_data import seed_if_empty
@@ -254,10 +250,6 @@ with st.sidebar:
         index=list(LANGUAGES.keys()).index(st.session_state["lang"]),
     )
     st.session_state["lang"] = lang_choice
-
-    st.caption(f"DEBUG secrets: {_SECRETS_DEBUG}")
-    _db_url_debug = os.environ.get("DATABASE_URL", "")
-    st.caption(f"DEBUG DB scheme: {_db_url_debug.split('://')[0] if _db_url_debug else 'UNSET (sqlite fallback)'}")
 
     # Account status/login -- placed at the very top of the sidebar (the
     # first thing rendered on load, in every tab) rather than tucked
