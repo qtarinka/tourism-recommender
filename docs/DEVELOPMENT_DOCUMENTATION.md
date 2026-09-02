@@ -32,11 +32,11 @@ tourism-recommender/
 ├── core/
 │   ├── db.py                 # SQLAlchemy models + engine (SQLite by default, Postgres via DATABASE_URL)
 │   ├── seed_data.py           # 20-destination dictionary + reference GUS/seasonal-risk data
-│   ├── scoring.py              # Recommendation algorithm
+│   ├── scoring.py              # Scoring/ranking (shared by both modes) + match-level/explanation + low_risk_months
 │   ├── etl.py                   # Live NBP rates + best-effort MSZ warnings refresh
 │   ├── i18n.py                   # EN/PL string tables + t() helper
-│   ├── images.py                  # Wikipedia landmark photo lookup (hero, cards, gallery)
-│   └── theme.py                    # Custom CSS (hero banner, card hover, photo placeholders)
+│   ├── images.py                  # Wikipedia landmark photos + country summary (hero, cards, gallery, detail dialog)
+│   └── theme.py                    # Custom CSS (hero banner, card hover, carousel, photo placeholders)
 ├── tests/
 │   ├── test_seed_data.py
 │   ├── test_scoring.py
@@ -54,7 +54,7 @@ for NBP, `feedparser` for the MSZ RSS feed, `python-dotenv` for config.
 
 | Area | Thesis spec | What's implemented | Why |
 |---|---|---|---|
-| Database | PostgreSQL | **Real PostgreSQL** (matches the thesis exactly) — SQLite remains the zero-config fallback if `DATABASE_URL` is unset | Started on SQLite for a zero-install first pass, then switched to an actual local PostgreSQL 18 instance once requested — see §8a for exactly how. Same SQLAlchemy models either way, no code changes needed to switch. |
+| Database | PostgreSQL | **Real PostgreSQL** (matches the thesis exactly) — SQLite remains the zero-config fallback if `DATABASE_URL` is unset | Started on SQLite for a zero-install first pass, then switched to an actual local PostgreSQL 18 instance once requested — see §9a for exactly how. Same SQLAlchemy models either way, no code changes needed to switch. |
 | GUS statistics | "GUS API" implied | **Seeded reference values** in `core/seed_data.py` | GUS's public BDL API doesn't expose the specific "organized vs. individual trips by destination country" breakdown the thesis describes at a queryable per-country level. Building a full scraper for a metric that isn't cleanly available wasn't worth the fragility; the numbers are illustrative and match the thesis's narrative (e.g. Egypt/Tunisia/Turkey skew organized, Czechia/Austria/Germany/Croatia skew individual). |
 | MSZ warnings | "RSS feed, 4-level scale" | **Live fetch attempted, with a documented fallback** | I could not find a stable, documented MSZ RSS feed with a machine-readable 1–4 level during implementation (see `core/etl.py` docstring). `MSZ_RSS_URL` is left as a `.env` setting: if you find/confirm the real feed URL, set it and the ETL will parse it (matching by country name in the entry title, defaulting matched entries to level 2 pending real level data). If unset, existing/seed data is kept rather than the app pretending to have live data it doesn't. |
 | Power BI | Embedded Power BI Service report via iframe | **A clickable "Open Power BI dashboard" link** (`POWERBI_REPORT_URL` in `.env`), not an iframe | See §6 for the full story — the university tenant blocks "Publish to web" (needs an admin), and true secure embedding needs an Azure app registration (real infra, out of scope). A direct link to the report works around both: opening it just requires being signed in to Power BI, which is fine for a personal thesis demo. |
@@ -136,7 +136,7 @@ Power BI workspace. It went through two revisions:
 1. **First pass (SQLite era)**: built from a one-time CSV export of
    `gus_tourism_stats`, uploaded via Power BI's "Upload a file" flow — a
    static snapshot with no ongoing connection to the app's database at all.
-2. **Second pass (after switching to Postgres, §8a)**: rebuilt as a genuine
+2. **Second pass (after switching to Postgres, §9a)**: rebuilt as a genuine
    **live connection**. Installed Power BI Desktop (via Microsoft Store —
    I can't drive its UI the way I could the browser-based Service, since
    it's a native app with no browser automation surface, so this leg was
@@ -217,7 +217,7 @@ for Italy, etc. — full list in `core/images.py`'s `LANDMARKS` dict).
   landmark's metadata on every Streamlit rerun (which happens on every
   widget interaction). Failures (offline, rate-limited, timeout) are *not*
   cached — only genuine successes are — so a transient failure doesn't lock
-  in a "no photo" result for 24 hours (see the bug log in §10).
+  in a "no photo" result for 24 hours (see the bug log in §11).
 - **Fallback**: if a photo can't be fetched, `render_photo()` in `app.py`
   shows a gradient placeholder with the destination's name instead of a
   broken image — used on the hero banner, recommendation cards, the
@@ -229,7 +229,152 @@ for Italy, etc. — full list in `core/images.py`'s `LANDMARKS` dict).
   effect, and fixed-height photo cropping so grid rows line up evenly
   despite each landmark photo having a different native aspect ratio.
 
-## 8. Setup & running
+## 8. Unified recommendation/comparison system (major restructuring)
+
+This was the largest single change to the project: recommendation and
+comparison used to be two separate tabs with separate UI (a card list vs.
+a raw `st.dataframe` table) even though both called the same
+`rank_destinations()` underneath. On request, they were unified into one
+flow, one form, one results renderer — comparison is now explicitly *the
+same recommendation system*, just given a smaller candidate list.
+
+**What changed, concretely:**
+
+- **One sidebar form, one button.** The old "Pokaż rekomendacje" button
+  and the separate comparison-tab multiselect are gone. The sidebar now
+  has a single "🗺️ Kierunki do rozważenia (opcjonalnie)" multiselect and a
+  single "🔎 Znajdź kierunki" button. Mode is derived, not chosen: empty
+  selection → recommendation mode (all 20 scored); non-empty → comparison
+  mode (only the selected ones scored) — `core/scoring.py`'s
+  `rank_destinations()` didn't need a single line changed; it already
+  accepted an arbitrary candidate list. A new `core/scoring.py` test
+  (`test_rank_destinations_with_a_single_candidate_is_comparison_mode`)
+  makes this equivalence explicit.
+- **One results renderer** (`render_result_card()` in `app.py`) draws
+  every card in both modes — the header/caption text is the only thing
+  that differs (`results_header_recommendation` vs.
+  `results_header_comparison`). This directly eliminates the dead-button
+  bug described in the request ("Show Recommendations" doing nothing
+  while viewing a comparison) — there is structurally only one action to
+  take now.
+- **Plain-language match explanations** (`ScoredDestination.match_level`
+  and `.explanation_items()` in `core/scoring.py`, new methods — the
+  scoring math itself is untouched). Score 3/2/1/0 maps to a label
+  ("Doskonałe/Bardzo dobre/Dobre/Słabe dopasowanie") plus 3 sentences,
+  one per criterion, phrased positively or negatively depending on whether
+  that criterion matched — e.g. "Wybrany okres podróży wiąże się z niskim
+  lub akceptowalnym ryzykiem sezonowym" vs. "...może wiązać się z
+  podwyższonym ryzykiem sezonowym." A card no longer shows an unexplained
+  "3/3" with no context.
+- **A shared destination detail dialog** (`_detail_dialog()`, opened via
+  `open_detail()`), reachable from three places — a Results card's "🔍
+  Zobacz szczegóły" button, the Favorites strip, and Explore Destinations
+  — one component, three entry points, not three separate detail views.
+  Contains: the match explanation (only when opened from a scored context;
+  omitted when opened from Explore, since there's nothing to explain
+  without criteria yet), a photo carousel, a genuinely-sourced "General
+  information" blurb (see below), currency + live rate, the MSZ warning
+  with its level explained, every seasonal risk on record for that
+  destination (not just the selected month — reuses the previously-unused
+  `SeasonalRisk.description_en/pl` columns), a "recommended travel period"
+  derived from that same seasonal-risk data (`core.scoring.low_risk_months`),
+  and an explicit "what's not covered" note (see below). This is the
+  "Destination Ranking → Destination Details" step from the requested
+  user flow.
+- **"General information" is real, sourced content, not invented.**
+  `core/images.py`'s new `get_country_summary()` pulls each country's own
+  lead paragraph from Wikipedia (same API family as the landmark photos,
+  same failure-doesn't-cache contract). The request listed several other
+  detail-view fields — climate, entry requirements, transport/accessibility,
+  "information particularly relevant to Polish travellers" — that this
+  app has no real, verified data source for. Rather than fabricate them
+  (the same call made earlier in this project for cost/GUS data), the
+  dialog has an explicit "ℹ️ Czego tu nie znajdziesz" section naming
+  exactly what's missing and why, instead of silently omitting them or
+  making something up.
+- **Explore Destinations redesigned**: search box + region filter
+  (segmented control), and critically, clicking a destination no longer
+  appends its extra photos inline below the card (the reported bug — the
+  page kept growing downward and became disorganized). It opens the same
+  shared detail dialog as a proper overlay instead. Each card also has an
+  "➕ Do porównania" button that adds that destination to the sidebar's
+  comparison selection — connecting Explore → Results per the requested
+  flow, without needing to manually retype the name in the sidebar.
+- **Session-only Favorites** (`st.session_state["favorites"]`, a plain
+  set of destination IDs). A ☆/★ toggle appears on every card and inside
+  the detail dialog; a "⭐ Twoje zapisane kierunki" strip appears at the
+  top of the Results tab whenever it's non-empty. This is the "Save" part
+  of the requested flow, implemented as simply as the requirement allows
+  ("do not make login mandatory... without unnecessarily complicating").
+  See the evaluation of full user accounts below.
+- **User accounts: evaluated, not built**, per the request to assess
+  feasibility without forcing login onto the core features. The
+  session-only Favorites above work today, with no account. The About
+  tab's new "Konta użytkowników i zapisywanie wyników" section documents,
+  in-app, what real cross-visit accounts would need: a `users` table,
+  secure password storage, and foreign-keying saved items to an account
+  — noting that the existing SQLAlchemy models already generalize to that
+  without restructuring, since nothing here was designed to preclude it.
+
+### Bugs found and fixed while building this
+
+- **Markdown link syntax silently failing inside a raw HTML block.** The
+  photo carousel's counter line was built as one `st.markdown(...,
+  unsafe_allow_html=True)` call containing both a `<div>` wrapper and a
+  `[text](url)` Markdown link inside it. Verified in the browser: it
+  rendered as the literal text `[Wikipedia](https://...)` instead of a
+  link — Markdown syntax embedded inside an explicit raw-HTML block
+  doesn't get parsed. Fixed by adding `_photo_credit_html()`, which
+  builds a real `<a href="...">` tag for exactly this one call site,
+  while the existing `_photo_credit()` (used inside plain `st.caption`/
+  `st.write` calls elsewhere, where Markdown parsing works normally) was
+  left untouched.
+- **The dialog closed itself the moment you used it.** The first version
+  called `_detail_dialog(...)` directly from inside each trigger button's
+  `if st.button(...):` block. That works for *opening* the dialog, but
+  every control *inside* it (the carousel's prev/next buttons) needs its
+  own `st.rerun()` to update — and on that fresh script run, the original
+  trigger button is no longer "clicked" (Streamlit buttons only return
+  `True` on the exact run they were pressed), so the dialog wasn't
+  re-invoked and it just vanished. Caught immediately by clicking "▶" in
+  the browser and watching the whole modal disappear instead of advancing
+  to photo 2. Fixed by moving to persistent state: `open_detail()` sets
+  `st.session_state["open_detail_id"]` (+ the scored object, if any) and
+  reruns; a single dispatcher line (`if
+  st.session_state.get("open_detail_id") is not None:
+  _detail_dialog(...)`) re-invokes the dialog on *every* rerun for as
+  long as that state is set, regardless of which button caused the rerun.
+  Closing (via the dialog's own × or the in-dialog "Zamknij" button) clears
+  that state through an `on_dismiss` callback so it doesn't just pop back
+  open on the next unrelated interaction. Re-verified: prev/next now
+  correctly keep the same destination's dialog open and just change the
+  photo.
+- **`StreamlitWidgetAlreadyInstantiatedError` from "➕ Do porównania".**
+  The first version of this button wrote straight into
+  `st.session_state["destinations_multiselect"]` — the sidebar's own
+  multiselect widget key — then called `st.rerun()`. Streamlit rejects
+  writing to a widget's session-state key on the same run where that
+  widget already rendered (the sidebar always runs before the Explore tab
+  further down the script), regardless of the pending rerun. Reproduced
+  live in the browser (a full traceback rendered in the app). Fixed with
+  a staging key: the button sets `st.session_state["pending_add_to_compare"]`
+  instead; a small block near the very top of the script — before the
+  sidebar creates the multiselect — checks for that pending value, merges
+  it into the selection, and clears it. Re-verified: adding a destination
+  from Explore now correctly shows up pre-selected in the sidebar with no
+  error, and running the search from there produces the right comparison.
+- Full test suite re-run after each of the three fixes above; all green.
+  Two new AppTest integration tests
+  (`test_unified_form_recommendation_mode_ranks_all_destinations`,
+  `test_unified_form_comparison_mode_ranks_only_selected_destinations`)
+  exercise the actual unified button + mode-switch end to end, mocking
+  the Wikipedia network layer for speed/determinism rather than depending
+  on live network performance (this machine was under heavy unrelated
+  load from other running applications during this pass, which caused a
+  couple of false-start timeouts before the mocking was added — logged
+  here since it looked like a regression at first and wasn't one).
+
+## 9. Setup & running
 
 ```powershell
 cd tourism-recommender
@@ -242,7 +387,7 @@ copy .env.example .env      # then edit ADMIN_PASSWORD at minimum
 First run auto-creates and seeds the database (SQLite at `data/app.db` by
 default) — no manual migration step needed for the default setup.
 
-### 8a. Switching to PostgreSQL (what this project actually runs on)
+### 9a. Switching to PostgreSQL (what this project actually runs on)
 
 This app currently runs against a real local PostgreSQL 18 instance, not
 SQLite. To set that up from scratch:
@@ -299,7 +444,7 @@ loop) to match the thesis's "harmonogram zadań" design:
 schtasks /create /tn "TourismAppETL" /tr "C:\path\to\.venv\Scripts\python.exe C:\path\to\scheduler.py" /sc daily /st 06:00
 ```
 
-## 9. Testing
+## 10. Testing
 
 ```powershell
 .\.venv\Scripts\pytest -v
@@ -317,7 +462,7 @@ schtasks /create /tn "TourismAppETL" /tr "C:\path\to\.venv\Scripts\python.exe C:
   Streamlit's `AppTest` harness, asserts it renders without exceptions, that
   the language switch actually changes rendered text, and all 5 tabs render.
 
-## 10. Verification performed during development
+## 11. Verification performed during development
 
 Beyond the automated suite, the running app was manually exercised end to
 end in a real Chrome browser session against a fresh SQLite database:
@@ -450,7 +595,26 @@ end in a real Chrome browser session against a fresh SQLite database:
   `.env`'s `DATABASE_URL`, so switching the app's real database doesn't
   and shouldn't change test behavior.
 
-## 11. Known limitations
+### Fifth pass: unified recommendation/comparison restructuring
+
+Full detail (what changed and all three bugs found/fixed) is in §8, kept
+there rather than duplicated here since that section already tells the
+story end to end. Summary: recommendation and comparison modes unified
+into one form/button/results-renderer (verified both modes live in the
+browser — an all-20 ranking and a single-destination comparison, both
+showing the same plain-language match explanations); Explore
+Destinations redesigned with search/filter and a shared detail dialog
+replacing the old inline-expansion gallery (verified the reported bug —
+photos appending below and pushing the page down — no longer happens);
+session-only Favorites verified end to end (toggle → strip appears →
+persists across tab switches). Three real bugs were found and fixed
+during this pass by actually clicking through the feature rather than
+just reading the code back: a Markdown-inside-raw-HTML link that
+silently failed to render, a dialog that closed itself on its own
+internal interactions, and a `StreamlitWidgetAlreadyInstantiatedError`
+crash from the Explore→sidebar "add to compare" action.
+
+## 12. Known limitations
 
 - GUS figures (`organized_share_pct`/`individual_share_pct`) are seeded
   reference values, not a live feed (see §3b) — no longer shown in the
@@ -476,3 +640,20 @@ end in a real Chrome browser session against a fresh SQLite database:
   hardened for any shared/production use — fine for localhost-only access
   as set up here, but change it if this database ever needs to be reachable
   from anywhere else.
+- "Number of travellers" is captured in the unified form and shown back to
+  the user inside the destination detail dialog, but does not currently
+  affect the match score — there's no per-person/per-group cost data in
+  this app (see §3a) to scale by. It's collected for context and future
+  extensibility, not silently ignored without explanation.
+- Favorites are session-only (`st.session_state`), not persisted to the
+  database or tied to any account — closing the browser loses them. See
+  §8's "user accounts" note for what real persistence would need.
+- The destination detail dialog deliberately does not cover climate,
+  entry requirements, or transport/accessibility — no verified data
+  source for these was integrated, and the dialog says so explicitly
+  rather than guessing (see §8).
+- Streamlit does not preserve scroll position across a rerun (a platform
+  limitation, not something this app controls) — closing the detail
+  dialog returns you to the same tab and the same search results, but the
+  page may have scrolled to the top rather than back to exactly where you
+  were.

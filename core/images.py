@@ -1,11 +1,11 @@
 """
-Landmark photo lookup via Wikipedia's public MediaWiki Action API (no API
-key, no account, no signup -- unlike a stock-photo API this needed
-nothing from the user to wire up). Used to show each destination's most
-recognizable tourist landmarks on the recommendation, comparison, and
-"explore destinations" gallery views -- multiple curated sights per
-destination, not just one, viewable directly in the app rather than
-sending the user to Wikipedia to see more.
+Landmark photo lookup, plus a short country summary, via Wikipedia's
+public MediaWiki Action API (no API key, no account, no signup -- unlike
+a stock-photo API this needed nothing from the user to wire up). Used to
+show each destination's most recognizable tourist landmarks and a
+genuinely sourced "general information" blurb throughout the app --
+multiple curated sights per destination, not just one, viewable directly
+in the app rather than sending the user to Wikipedia to see more.
 
 Uses action=query&prop=pageimages with an explicit pithumbsize rather
 than the simpler REST /page/summary endpoint, because Wikimedia's image
@@ -111,3 +111,39 @@ def get_destination_photos(destination_name_en: str, limit: int = 3):
     titles = LANDMARKS.get(destination_name_en, [])[:limit]
     photos = [_lookup(title) for title in titles]
     return [p for p in photos if p is not None]
+
+
+@st.cache_data(ttl=60 * 60 * 24, show_spinner=False)
+def _fetch_country_extract(country_name_en: str):
+    """Same failure-doesn't-cache contract as _fetch_page_image (see its
+    docstring) -- raises rather than returning None on network failure."""
+    resp = requests.get(
+        WIKI_API_URL,
+        params={
+            "action": "query", "titles": country_name_en, "prop": "extracts|info",
+            "inprop": "url", "exintro": 1, "explaintext": 1, "exsentences": 3,
+            "format": "json", "redirects": 1,
+        },
+        headers={"User-Agent": "tourism-recommender-thesis-app/1.0 (educational project)"},
+        timeout=6,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def get_country_summary(country_name_en: str):
+    """Returns {"extract", "page_url"} -- a short (~3 sentence), genuinely
+    sourced intro paragraph about the country from Wikipedia's own lead
+    section, or None if unavailable. Used for the destination detail
+    view's "General information" section: real, attributable content
+    rather than an invented country description."""
+    try:
+        data = _fetch_country_extract(country_name_en)
+    except requests.RequestException:
+        return None
+    pages = data.get("query", {}).get("pages", {})
+    page = next(iter(pages.values()), None)
+    extract = (page or {}).get("extract", "").strip()
+    if not page or not extract:
+        return None
+    return {"extract": extract, "page_url": page.get("fullurl")}

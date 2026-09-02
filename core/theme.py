@@ -143,5 +143,27 @@ div[data-testid="stVerticalBlockBorderWrapper"]:hover {
 [data-testid="stMainBlockContainer"] {
     animation: fadeInUp 0.35s ease-out;
 }
+
+/* ---- destination detail dialog: carousel image gets its own larger,
+   fixed-height treatment via raw <img> (not st.image, which the global
+   image rule above caps at 150px for card/grid consistency) ---- */
+.detail-carousel-img {
+    width: 100%;
+    max-height: 380px;
+    object-fit: cover;
+    border-radius: 14px;
+    display: block;
+}
+.detail-carousel-counter {
+    text-align: center;
+    font-size: 0.85rem;
+    color: var(--text-color, #666);
+    margin-top: 0.35rem;
+}
+.detail-section-header {
+    font-family: 'Poppins', sans-serif;
+    font-weight: 700;
+    margin: 1.1rem 0 0.3rem 0;
+}
 </style>
 """

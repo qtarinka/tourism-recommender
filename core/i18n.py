@@ -19,18 +19,23 @@ STRINGS = {
         "en": "Outbound Tourism Decision Support System",
     },
     "app_subtitle": {
-        "pl": "Porównaj kierunki i otrzymaj rekomendację dopasowaną do Twoich preferencji.",
-        "en": "Compare destinations and get a recommendation matched to your preferences.",
+        "pl": "Jedne kryteria podróży. Ranking kierunków lub porównanie wybranych — Ty decydujesz.",
+        "en": "One set of travel criteria. A full ranking or a comparison of your picks — your call.",
     },
-    "nav_recommendation": {"pl": "Rekomendacja", "en": "Recommendation"},
-    "nav_comparison": {"pl": "Porównanie", "en": "Comparison"},
+    "nav_results": {"pl": "Wyniki", "en": "Results"},
+    "nav_explore": {"pl": "Poznaj kierunki", "en": "Explore destinations"},
     "nav_admin": {"pl": "Panel administratora", "en": "Admin panel"},
-    "form_header": {"pl": "Twoje preferencje", "en": "Your preferences"},
+
+    # --- unified criteria form (sidebar) -----------------------------
+    "form_header": {"pl": "Twoje kryteria podróży", "en": "Your travel criteria"},
     "form_intro": {
-        "pl": "Odpowiedz na 4 krótkie pytania, a algorytm oceni 20 kierunków pod kątem Twoich preferencji.",
-        "en": "Answer 4 quick questions and the algorithm will score all 20 destinations against your preferences.",
+        "pl": "Wypełnij raz — zostaw pole kierunków puste, aby zobaczyć ranking wszystkich "
+              "20 kierunków, albo wybierz konkretne, aby je porównać.",
+        "en": "Fill this in once — leave destinations empty to rank all 20, or pick specific "
+              "ones to compare them.",
     },
     "form_trip_length": {"pl": "Długość wyjazdu (dni)", "en": "Trip length (days)"},
+    "form_travellers": {"pl": "Liczba podróżnych", "en": "Number of travellers"},
     "form_travel_month": {"pl": "Miesiąc wyjazdu", "en": "Travel month"},
     "form_org_style": {"pl": "Styl organizacji", "en": "Organization style"},
     "form_org_organized": {"pl": "Zorganizowany", "en": "Organized"},
@@ -39,15 +44,78 @@ STRINGS = {
     "form_risk_low": {"pl": "Niski", "en": "Low"},
     "form_risk_medium": {"pl": "Średni", "en": "Medium"},
     "form_risk_high": {"pl": "Wysoki", "en": "High"},
-    "form_submit": {"pl": "Pokaż rekomendacje", "en": "Show recommendations"},
-    "results_header": {"pl": "Ranking rekomendacji", "en": "Recommendation ranking"},
-    "results_score": {"pl": "Punktacja", "en": "Score"},
-    "results_empty": {
-        "pl": "Ustaw preferencje i kliknij przycisk, aby zobaczyć rekomendacje.",
-        "en": "Set your preferences and click the button to see recommendations.",
+    "form_destinations": {"pl": "Kierunki do rozważenia (opcjonalnie)", "en": "Destinations to consider (optional)"},
+    "form_destinations_help": {
+        "pl": "Puste = ranking wszystkich kierunków. Wybrane = porównanie tylko tych kierunków.",
+        "en": "Empty = rank all destinations. Selected = compare only those destinations.",
     },
-    "compare_header": {"pl": "Porównywarka kierunków", "en": "Destination comparison"},
-    "compare_select": {"pl": "Wybierz kierunki do porównania", "en": "Select destinations to compare"},
+    "form_submit": {"pl": "Znajdź kierunki", "en": "Find destinations"},
+
+    # --- unified results -----------------------------------------------
+    "results_header_recommendation": {"pl": "Ranking rekomendacji", "en": "Recommendation ranking"},
+    "results_header_comparison": {"pl": "Porównanie wybranych kierunków", "en": "Comparison of selected destinations"},
+    "results_mode_caption_recommendation": {
+        "pl": "Wszystkie 20 kierunków ocenione względem Twoich kryteriów, od najlepiej dopasowanego.",
+        "en": "All 20 destinations scored against your criteria, best match first.",
+    },
+    "results_mode_caption_comparison": {
+        "pl": "Tylko wybrane przez Ciebie kierunki, ocenione względem tych samych kryteriów.",
+        "en": "Only the destinations you picked, scored against the same criteria.",
+    },
+    "results_score": {"pl": "Punktacja", "en": "Score"},
+    "results_score_of": {"pl": "{score}/3 kryteriów", "en": "{score}/3 criteria"},
+    "results_empty": {
+        "pl": "Ustaw kryteria w panelu bocznym i kliknij „Znajdź kierunki”, aby zobaczyć wyniki.",
+        "en": "Set your criteria in the sidebar and click “Find destinations” to see results.",
+    },
+    "results_no_selected_destinations": {
+        "pl": "Wybrane kierunki nie zostały znalezione — spróbuj ponownie.",
+        "en": "The destinations you selected couldn't be found — try again.",
+    },
+    "card_view_details": {"pl": "🔍 Zobacz szczegóły", "en": "🔍 View details"},
+
+    "match_excellent": {"pl": "Doskonałe dopasowanie", "en": "Excellent match"},
+    "match_very_good": {"pl": "Bardzo dobre dopasowanie", "en": "Very good match"},
+    "match_good": {"pl": "Dobre dopasowanie", "en": "Good match"},
+    "match_limited": {"pl": "Słabe dopasowanie", "en": "Limited match"},
+
+    "explain_header": {"pl": "Dlaczego ten kierunek?", "en": "Why this destination?"},
+    "explain_trip_length_pos": {
+        "pl": "Planowana długość wyjazdu dobrze pasuje do tego kierunku.",
+        "en": "Your planned trip length is a good fit for this destination.",
+    },
+    "explain_trip_length_neg": {
+        "pl": "Planowana długość wyjazdu może nie być optymalna dla tego kierunku.",
+        "en": "Your planned trip length may be less suitable for this destination.",
+    },
+    "explain_seasonal_pos": {
+        "pl": "Wybrany okres podróży wiąże się z niskim lub akceptowalnym ryzykiem sezonowym.",
+        "en": "Your selected travel period has low or acceptable seasonal risk.",
+    },
+    "explain_seasonal_neg": {
+        "pl": "Wybrany miesiąc może wiązać się z podwyższonym ryzykiem sezonowym.",
+        "en": "Your selected month may involve elevated seasonal risk.",
+    },
+    "explain_msz_pos": {
+        "pl": "Aktualny poziom ostrzeżenia MSZ jest akceptowalny przy Twoim poziomie ryzyka.",
+        "en": "The current MSZ warning level is acceptable for your risk tolerance.",
+    },
+    "explain_msz_neg": {
+        "pl": "Aktualny poziom ostrzeżenia MSZ przekracza Twój akceptowalny poziom ryzyka.",
+        "en": "The current MSZ warning level exceeds your acceptable risk tolerance.",
+    },
+
+    "favorite_add": {"pl": "☆ Zapisz", "en": "☆ Save"},
+    "favorite_remove": {"pl": "★ Zapisano", "en": "★ Saved"},
+    "favorites_header": {"pl": "Twoje zapisane kierunki", "en": "Your saved destinations"},
+    "favorites_note": {
+        "pl": "Zapisane kierunki są przechowywane tylko w tej sesji przeglądarki — nie wymaga to "
+              "konta i nic nie jest zapisywane na stałe. Zobacz „Jak to działa” po informacje o "
+              "kontach użytkownika.",
+        "en": "Saved destinations are kept only for this browser session — no account needed, "
+              "nothing is stored permanently. See “How this works” for notes on user accounts.",
+    },
+
     "col_destination": {"pl": "Kierunek", "en": "Destination"},
     "col_region": {"pl": "Region", "en": "Region"},
     "col_currency": {"pl": "Waluta", "en": "Currency"},
@@ -57,6 +125,7 @@ STRINGS = {
     "col_msz_message": {"pl": "Komunikat MSZ", "en": "MSZ advisory"},
     "col_seasonal_risk": {"pl": "Ryzyko sezonowe w wybranym miesiącu", "en": "Seasonal risk in selected month"},
     "col_none": {"pl": "brak", "en": "none"},
+
     "info_header": {"pl": "Dane kontekstowe", "en": "Contextual data"},
     "msz_info_header": {"pl": "Czym jest ostrzeżenie MSZ?", "en": "What is an MSZ warning?"},
     "msz_info_caption": {
@@ -81,6 +150,7 @@ STRINGS = {
         "pl": "Pulpit Power BI nie jest jeszcze skonfigurowany. Ustaw POWERBI_REPORT_URL w pliku .env.",
         "en": "The Power BI dashboard isn't configured yet. Set POWERBI_REPORT_URL in your .env file.",
     },
+
     "admin_login_header": {"pl": "Logowanie administratora", "en": "Administrator login"},
     "admin_password": {"pl": "Hasło", "en": "Password"},
     "admin_login_btn": {"pl": "Zaloguj", "en": "Log in"},
@@ -92,24 +162,109 @@ STRINGS = {
     "admin_logout": {"pl": "Wyloguj", "en": "Log out"},
     "footer_last_refresh": {"pl": "Ostatnia aktualizacja danych", "en": "Data last refreshed"},
     "footer_never": {"pl": "nigdy (uruchom scheduler.py)", "en": "never (run scheduler.py)"},
+
+    # --- explore destinations -----------------------------------------
     "gallery_header": {"pl": "Poznaj kierunki", "en": "Explore the destinations"},
     "gallery_intro": {
-        "pl": "Kliknij kierunek, aby zobaczyć więcej zdjęć jego najpopularniejszych atrakcji.",
-        "en": "Click a destination to see more photos of its most popular sights.",
+        "pl": "Przeglądaj, szukaj i odkrywaj wszystkie 20 kierunków. Kliknij kartę, aby zobaczyć "
+              "zdjęcia i szczegóły — bez rozwijania strony w dół.",
+        "en": "Browse, search, and discover all 20 destinations. Click a card to see photos and "
+              "details — without the page expanding downward.",
     },
-    "gallery_expand": {"pl": "Zobacz więcej zdjęć", "en": "See more photos"},
+    "explore_search_placeholder": {"pl": "Szukaj kierunku...", "en": "Search destinations..."},
+    "explore_region_all": {"pl": "Wszystkie regiony", "en": "All regions"},
+    "explore_region_europe": {"pl": "Europa", "en": "Europe"},
+    "explore_region_non_europe": {"pl": "Poza Europą", "en": "Non-Europe"},
+    "explore_no_results": {"pl": "Brak kierunków pasujących do wyszukiwania.", "en": "No destinations match your search."},
+    "explore_open": {"pl": "🖼️ Zdjęcia i szczegóły", "en": "🖼️ Photos & details"},
+    "explore_add_to_compare": {"pl": "➕ Do porównania", "en": "➕ Add to compare"},
+    "explore_added_to_compare": {
+        "pl": "Dodano {name} do kierunków w panelu bocznym — kliknij „Znajdź kierunki”, aby zobaczyć wynik.",
+        "en": "Added {name} to the destinations in the sidebar — click “Find destinations” to see the result.",
+    },
+
     "photo_credit_prefix": {"pl": "Zdjęcie", "en": "Photo"},
     "photo_via_wikipedia": {"pl": "Wikipedia", "en": "Wikipedia"},
+
+    # --- destination detail dialog --------------------------------------
+    "detail_dialog_title": {"pl": "Szczegóły kierunku", "en": "Destination details"},
+    "detail_close": {"pl": "Zamknij", "en": "Close"},
+    "detail_photos_header": {"pl": "Zdjęcia", "en": "Photos"},
+    "detail_photo_counter": {"pl": "Zdjęcie {i} z {n}", "en": "Photo {i} of {n}"},
+    "detail_photo_none": {"pl": "Brak dostępnych zdjęć dla tego kierunku.", "en": "No photos available for this destination."},
+    "detail_general_info_header": {"pl": "Ogólne informacje", "en": "General information"},
+    "detail_general_info_missing": {
+        "pl": "Ogólne informacje o tym kierunku są obecnie niedostępne.",
+        "en": "General information for this destination isn't available right now.",
+    },
+    "detail_read_more": {"pl": "Czytaj więcej na Wikipedii", "en": "Read more on Wikipedia"},
+    "detail_currency_header": {"pl": "Waluta i kurs", "en": "Currency & exchange rate"},
+    "detail_msz_header": {"pl": "Ostrzeżenie MSZ dla tego kierunku", "en": "MSZ warning for this destination"},
+    "detail_seasonal_header": {"pl": "Ryzyka sezonowe w ciągu roku", "en": "Seasonal risks through the year"},
+    "detail_seasonal_none": {
+        "pl": "Brak odnotowanych ryzyk sezonowych dla tego kierunku w naszej bazie.",
+        "en": "No seasonal risks recorded for this destination in our data.",
+    },
+    "detail_recommended_period_header": {"pl": "Zalecany okres podróży", "en": "Recommended travel period"},
+    "detail_recommended_period_all_clear": {
+        "pl": "Na podstawie naszych danych: brak odnotowanych podwyższonych ryzyk sezonowych w "
+              "żadnym miesiącu dla tego kierunku.",
+        "en": "Based on our data: no elevated seasonal risk recorded for any month for this destination.",
+    },
+    "detail_recommended_period_avoid": {
+        "pl": "Na podstawie naszych danych warto zachować szczególną ostrożność w: {months}.",
+        "en": "Based on our data, worth extra caution in: {months}.",
+    },
+    "detail_travellers_note": {
+        "pl": "Liczba podróżnych z Twoich kryteriów: {n}. Obecnie nie wpływa to na wynik "
+              "dopasowania — w tej wersji aplikacji nie ma danych o kosztach na osobę.",
+        "en": "Number of travellers from your criteria: {n}. This doesn't currently affect the "
+              "match score — this version of the app has no per-person cost data.",
+    },
+    "detail_not_covered_header": {"pl": "Czego tu nie znajdziesz", "en": "What's not covered here"},
+    "detail_not_covered": {
+        "pl": "Klimat, wymogi wjazdowe i szczegóły dotyczące transportu nie są obecnie częścią "
+              "zestawu danych tej aplikacji — nie chcemy zgadywać zamiast podawać sprawdzone dane.",
+        "en": "Climate, entry requirements, and transport/accessibility details aren't currently "
+              "part of this app's dataset — we'd rather leave them out than guess.",
+    },
+
     "about_header": {"pl": "Jak to działa?", "en": "How this works"},
     "about_text": {
-        "pl": "Wskazujesz preferencje → algorytm porównuje je z danymi 20 kierunków → każdy "
+        "pl": "Ustawiasz kryteria podróży raz → algorytm ocenia względem nich kierunki → każdy "
               "kierunek dostaje od 0 do 3 punktów za: dopasowanie długości pobytu, brak "
               "podwyższonego ryzyka sezonowego w wybranym miesiącu oraz akceptowalny poziom "
-              "ostrzeżenia MSZ. Wyniki są posortowane malejąco po punktacji.",
-        "en": "You set your preferences → the algorithm compares them against data for 20 "
-              "destinations → each destination scores 0-3 points for: matching your trip length, "
-              "no elevated seasonal risk in your travel month, and an acceptable MSZ warning "
-              "level. Results are sorted highest score first.",
+              "ostrzeżenia MSZ. Jeśli nie wybierzesz konkretnych kierunków, oceniane jest "
+              "wszystkich 20 (tryb rekomendacji). Jeśli wybierzesz kierunki, oceniane są tylko "
+              "one, tymi samymi kryteriami (tryb porównania) — to dokładnie ten sam mechanizm, "
+              "różni się tylko liczba ocenianych kierunków. Wyniki są posortowane malejąco po "
+              "punktacji i opisane słownie, nie tylko liczbą.",
+        "en": "You set your travel criteria once → the algorithm scores destinations against "
+              "them → each destination scores 0-3 points for: matching your trip length, no "
+              "elevated seasonal risk in your travel month, and an acceptable MSZ warning level. "
+              "Leave destinations unselected and all 20 are scored (recommendation mode); select "
+              "specific ones and only those are scored, with the exact same criteria (comparison "
+              "mode) — it's the same mechanism either way, just a different candidate list. "
+              "Results are sorted highest score first and explained in words, not just a number.",
+    },
+    "about_accounts_header": {"pl": "Konta użytkowników i zapisywanie wyników", "en": "User accounts & saving results"},
+    "about_accounts_text": {
+        "pl": "Ta wersja aplikacji nie wymaga konta do korzystania z rekomendacji, porównań ani "
+              "eksploracji kierunków. Funkcja „Zapisz” na kartach kierunków działa już teraz, ale "
+              "przechowuje wybory tylko w bieżącej sesji przeglądarki (resetuje się po jej "
+              "zamknięciu) — to świadomy, prosty wybór, żeby nie komplikować głównej funkcji "
+              "aplikacji logowaniem. Prawdziwe konta (zapamiętujące ulubione kierunki i wyniki "
+              "między wizytami) wymagałyby dodania tabeli użytkowników, bezpiecznego "
+              "przechowywania haseł oraz powiązania zapisanych elementów z kontem — architektura "
+              "bazy danych już to obsłuży bez większych zmian, jeśli kiedyś zajdzie taka potrzeba.",
+        "en": "This version of the app doesn't require an account for recommendations, "
+              "comparisons, or exploring destinations. The “Save” button on destination cards "
+              "already works, but only keeps your picks for the current browser session (resets "
+              "when you close it) — a deliberate, simple choice so the core features don't need "
+              "a login. Real accounts (remembering favorites and results across visits) would "
+              "need a users table, secure password storage, and linking saved items to an "
+              "account — the database architecture already supports adding that without major "
+              "changes, if it's ever needed.",
     },
 }
 

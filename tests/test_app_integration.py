@@ -6,6 +6,7 @@ than pure unit tests.
 """
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -17,6 +18,28 @@ from streamlit.testing.v1 import AppTest
 APP_PATH = str(Path(__file__).resolve().parent.parent / "app.py")
 
 
+def _mock_wikipedia_get(url, params=None, headers=None, timeout=None):
+    """Fast, deterministic stand-in for live Wikipedia calls -- AppTest
+    runs the real app.py script in-process, so patching core.images's
+    requests.get affects it directly. Used for tests that don't care
+    about actual photo/summary content, only that the app doesn't crash
+    and renders the expected destination text -- avoids depending on
+    live network speed/availability for CI-style runs."""
+    from unittest.mock import MagicMock
+    resp = MagicMock()
+    resp.status_code = 200
+    if params and params.get("prop") == "extracts|info":
+        resp.json.return_value = {"query": {"pages": {"1": {
+            "extract": "Test extract.", "fullurl": "https://en.wikipedia.org/wiki/Test",
+        }}}}
+    else:
+        resp.json.return_value = {"query": {"pages": {"1": {
+            "thumbnail": {"source": "https://upload.wikimedia.org/test.jpg"},
+            "fullurl": "https://en.wikipedia.org/wiki/Test",
+        }}}}
+    return resp
+
+
 def test_app_runs_without_exceptions():
     at = AppTest.from_file(APP_PATH)
     at.run(timeout=30)
@@ -25,8 +48,14 @@ def test_app_runs_without_exceptions():
 
 def _all_markdown_html(at):
     """The hero banner is raw HTML via st.markdown, not st.title, so
-    AppTest's `.title` accessor won't see it -- search markdown blocks."""
-    return "\n".join(el.value for el in at.markdown)
+    AppTest's `.title` accessor won't see it -- search markdown blocks.
+    Also pulls in subheader/caption/text, since results/explore content
+    uses those element types too, not just st.markdown."""
+    parts = [el.value for el in at.markdown]
+    parts += [el.value for el in at.subheader]
+    parts += [el.value for el in at.caption]
+    parts += [el.value for el in at.text]
+    return "\n".join(parts)
 
 
 def test_default_language_is_polish_and_switches_to_english():
@@ -44,3 +73,37 @@ def test_tabs_render_recommendation_comparison_info_about_admin():
     at.run(timeout=30)
     assert not at.exception
     assert len(at.tabs) == 5
+
+
+def test_unified_form_recommendation_mode_ranks_all_destinations():
+    """No destinations selected -> recommendation mode: all 20 are
+    scored and rendered. This is the single "Find destinations" flow
+    replacing the old separate recommendation/comparison forms."""
+    with patch("core.images.requests.get", side_effect=_mock_wikipedia_get):
+        at = AppTest.from_file(APP_PATH)
+        at.run(timeout=30)
+        assert at.sidebar.multiselect(key="destinations_multiselect").value == []
+
+        at.sidebar.button[0].click().run(timeout=30)
+        assert not at.exception
+        html = _all_markdown_html(at)
+        assert "Ranking rekomendacji" in html
+        # A known seeded destination should appear somewhere in the ranking.
+        assert "Austria" in html
+
+
+def test_unified_form_comparison_mode_ranks_only_selected_destinations():
+    """Selecting destinations in the same sidebar form switches to
+    comparison mode -- same button, same results renderer, only the
+    candidate list differs (core.scoring.rank_destinations called with
+    a smaller list rather than a separate comparison algorithm)."""
+    with patch("core.images.requests.get", side_effect=_mock_wikipedia_get):
+        at = AppTest.from_file(APP_PATH)
+        at.run(timeout=30)
+
+        at.sidebar.multiselect(key="destinations_multiselect").set_value(["Egipt"]).run(timeout=30)
+        at.sidebar.button[0].click().run(timeout=30)
+        assert not at.exception
+        html = _all_markdown_html(at)
+        assert "Porównanie wybranych kierunków" in html
+        assert "Egipt" in html

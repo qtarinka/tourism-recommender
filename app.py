@@ -2,8 +2,13 @@
 Streamlit entrypoint: `streamlit run app.py`
 
 Tourism outbound-trip decision support system (thesis chapters 3-7
-implementation) with an added English/Polish language switcher, real
-destination photography, and a visual redesign beyond the thesis's scope.
+implementation), restructured around one unified travel-criteria form:
+leave destinations unselected for a full ranking (recommendation mode),
+or pick specific ones to score only those (comparison mode). Both modes
+share the same scoring/ranking call (core.scoring.rank_destinations) and
+the same results UI -- comparison is not a separate system, it's the same
+one given a smaller candidate list. See docs/DEVELOPMENT_DOCUMENTATION.md
+for the full rationale behind this restructuring.
 """
 import os
 
@@ -18,8 +23,8 @@ load_dotenv()
 from core.db import init_db, get_session, Destination, SeasonalRisk
 from core.seed_data import seed_if_empty
 from core.i18n import t, month_name, LANGUAGES
-from core.scoring import rank_destinations
-from core.images import get_landmark_image, get_destination_photos
+from core.scoring import rank_destinations, low_risk_months
+from core.images import get_landmark_image, get_destination_photos, get_country_summary
 from core.theme import CUSTOM_CSS
 
 st.set_page_config(page_title="Tourism Decision Support", page_icon="\U0001F30D", layout="wide")
@@ -33,39 +38,29 @@ _session.close()
 
 if "lang" not in st.session_state:
     st.session_state["lang"] = "pl"
+if "search_done" not in st.session_state:
+    st.session_state["search_done"] = False
+if "favorites" not in st.session_state:
+    st.session_state["favorites"] = set()
+if "open_detail_id" not in st.session_state:
+    st.session_state["open_detail_id"] = None
+if "open_detail_scored" not in st.session_state:
+    st.session_state["open_detail_scored"] = None
 
-# --- sidebar: language + preferences form ------------------------------
-with st.sidebar:
-    lang_choice = st.selectbox(
-        "Język / Language", options=list(LANGUAGES.keys()),
-        format_func=lambda code: LANGUAGES[code],
-        index=list(LANGUAGES.keys()).index(st.session_state["lang"]),
-    )
-    st.session_state["lang"] = lang_choice
-
-    st.markdown(f'<div class="pref-card-header">🧭 {t("form_header")}</div>', unsafe_allow_html=True)
-    st.caption(t("form_intro"))
-
-    trip_length_days = st.slider(f"📅 {t('form_trip_length')}", min_value=2, max_value=21, value=7)
-    travel_month = st.selectbox(
-        f"🗓️ {t('form_travel_month')}", options=list(range(1, 13)),
-        format_func=month_name, index=6,
-    )
-    st.markdown(f"**🧳 {t('form_org_style')}**")
-    org_style = st.segmented_control(
-        t("form_org_style"), options=["organized", "individual"],
-        format_func=lambda v: t("form_org_organized") if v == "organized" else t("form_org_individual"),
-        default="organized", label_visibility="collapsed",
-    ) or "organized"
-    st.markdown(f"**⚠️ {t('form_risk')}**")
-    risk_tolerance = st.segmented_control(
-        t("form_risk"), options=["low", "medium", "high"],
-        format_func=lambda v: {"low": t("form_risk_low"), "medium": t("form_risk_medium"),
-                                "high": t("form_risk_high")}[v],
-        default="medium", label_visibility="collapsed",
-    ) or "medium"
-
-    submitted = st.button(f"🔎 {t('form_submit')}", type="primary", use_container_width=True)
+# A destination added to the comparison selection from "Explore" (below)
+# stages its name here rather than writing directly into
+# st.session_state["destinations_multiselect"] -- Streamlit raises
+# StreamlitWidgetAlreadyInstantiatedError if you set a widget's own
+# session_state value on the same run where that widget already rendered
+# (the sidebar, further down, always runs before the Explore tab that
+# would otherwise try this). Applying the pending value here, before the
+# sidebar creates the widget, avoids that entirely.
+if "pending_add_to_compare" in st.session_state:
+    _pending_name = st.session_state.pop("pending_add_to_compare")
+    _current_selection = list(st.session_state.get("destinations_multiselect", []))
+    if _pending_name not in _current_selection:
+        _current_selection.append(_pending_name)
+    st.session_state["destinations_multiselect"] = _current_selection
 
 session = get_session()
 all_destinations = session.query(Destination).all()
@@ -78,9 +73,22 @@ def destination_name(dest):
 
 
 def _photo_credit(img):
+    """Markdown-syntax credit line -- for use inside st.caption/st.write,
+    which parse Markdown normally."""
     credit = f"{t('photo_credit_prefix')}: {img['title']}"
     if img.get("page_url"):
         credit = f"{credit} — [{t('photo_via_wikipedia')}]({img['page_url']})"
+    return credit
+
+
+def _photo_credit_html(img):
+    """Same credit line as an <a> tag instead of Markdown link syntax --
+    for use inside a raw unsafe_allow_html block (e.g. the carousel
+    counter), where embedded `[text](url)` Markdown does NOT get parsed
+    into a link (verified: it rendered as literal bracket/paren text)."""
+    credit = f"{t('photo_credit_prefix')}: {img['title']}"
+    if img.get("page_url"):
+        credit = f'{credit} — <a href="{img["page_url"]}" target="_blank">{t("photo_via_wikipedia")}</a>'
     return credit
 
 
@@ -115,80 +123,323 @@ def render_hero():
     )
 
 
+def toggle_favorite(dest_id):
+    favs = st.session_state["favorites"]
+    if dest_id in favs:
+        favs.discard(dest_id)
+    else:
+        favs.add(dest_id)
+
+
+def open_detail(dest_id, scored=None):
+    """Opens the destination detail dialog by setting persistent state and
+    rerunning, rather than calling the @st.dialog function directly from
+    inside a button handler. This matters: a button-guarded direct call
+    (`if st.button(...): _detail_dialog(...)`) only re-opens the dialog on
+    the exact rerun where that specific button was clicked -- any
+    *internal* interaction inside the dialog (e.g. the carousel's
+    prev/next buttons) triggers its own st.rerun(), which is a fresh
+    script run where the original trigger button is no longer "clicked",
+    so the dialog would immediately close instead of just updating its
+    photo. Session-state-backed "is a dialog open, and for which
+    destination" persists across those internal reruns correctly."""
+    st.session_state["open_detail_id"] = dest_id
+    st.session_state["open_detail_scored"] = scored
+    st.rerun()
+
+
+def _close_detail():
+    st.session_state["open_detail_id"] = None
+    st.session_state["open_detail_scored"] = None
+
+
+# --- sidebar: ONE unified travel-criteria form --------------------------
+# Mode (recommendation vs comparison) is derived from whether the
+# "destinations to consider" multiselect is empty -- there is no separate
+# comparison form; this is deliberate (see requirement: comparison is an
+# extended recommendation, not a parallel feature).
+with st.sidebar:
+    lang_choice = st.selectbox(
+        "Język / Language", options=list(LANGUAGES.keys()),
+        format_func=lambda code: LANGUAGES[code],
+        index=list(LANGUAGES.keys()).index(st.session_state["lang"]),
+    )
+    st.session_state["lang"] = lang_choice
+
+    st.markdown(f'<div class="pref-card-header">🧭 {t("form_header")}</div>', unsafe_allow_html=True)
+    st.caption(t("form_intro"))
+
+    trip_length_days = st.slider(f"📅 {t('form_trip_length')}", min_value=2, max_value=21, value=7)
+    travellers = st.number_input(f"👥 {t('form_travellers')}", min_value=1, max_value=10, value=2, step=1)
+    st.session_state["current_travellers"] = travellers
+    travel_month = st.selectbox(
+        f"🗓️ {t('form_travel_month')}", options=list(range(1, 13)),
+        format_func=month_name, index=6,
+    )
+    st.markdown(f"**🧳 {t('form_org_style')}**")
+    org_style = st.segmented_control(
+        t("form_org_style"), options=["organized", "individual"],
+        format_func=lambda v: t("form_org_organized") if v == "organized" else t("form_org_individual"),
+        default="organized", label_visibility="collapsed",
+    ) or "organized"
+    st.markdown(f"**⚠️ {t('form_risk')}**")
+    risk_tolerance = st.segmented_control(
+        t("form_risk"), options=["low", "medium", "high"],
+        format_func=lambda v: {"low": t("form_risk_low"), "medium": t("form_risk_medium"),
+                                "high": t("form_risk_high")}[v],
+        default="medium", label_visibility="collapsed",
+    ) or "medium"
+
+    _dest_name_options = sorted(destination_name(d) for d in all_destinations)
+    chosen_names = st.multiselect(
+        f"🗺️ {t('form_destinations')}", options=_dest_name_options, key="destinations_multiselect",
+    )
+    st.caption(t("form_destinations_help"))
+
+    submitted = st.button(f"🔎 {t('form_submit')}", type="primary", use_container_width=True)
+    if submitted:
+        st.session_state["search_done"] = True
+
 render_hero()
 
-tab_reco, tab_compare, tab_info, tab_about, tab_admin = st.tabs([
-    f"🏆 {t('nav_recommendation')}", f"⚖️ {t('nav_comparison')}", f"📊 {t('info_header')}",
+tab_results, tab_explore, tab_info, tab_about, tab_admin = st.tabs([
+    f"🏆 {t('nav_results')}", f"🧭 {t('nav_explore')}", f"📊 {t('info_header')}",
     f"ℹ️ {t('about_header')}", f"🔐 {t('nav_admin')}",
 ])
 
 
-# --- Recommendation tab --------------------------------------------------
-with tab_reco:
-    if not submitted:
+# --- destination detail dialog: shared by Results cards, the Favorites
+# strip, and Explore Destinations -- one component, three entry points,
+# per the "reuse instead of duplicating" requirement. -----------------
+@st.dialog(t("detail_dialog_title"), width="large", on_dismiss=_close_detail)
+def _detail_dialog(dest_id: int, scored):
+    dest = session.get(Destination, dest_id)
+    if dest is None:
+        return
+    lang = st.session_state["lang"]
+
+    st.markdown(f"## {destination_name(dest)}")
+    is_fav = dest_id in st.session_state["favorites"]
+    if st.button(t("favorite_remove") if is_fav else t("favorite_add"), key=f"fav_dialog_{dest_id}"):
+        toggle_favorite(dest_id)
+        st.rerun()
+
+    if scored is not None:
+        st.markdown(f'<div class="detail-section-header">⭐ {t("explain_header")}</div>', unsafe_allow_html=True)
+        st.markdown(f"**{t('match_' + scored.match_level)}** &nbsp;·&nbsp; "
+                    f"{t('results_score_of').format(score=scored.score)}")
+        for matched, pos_key, neg_key in scored.explanation_items():
+            icon = "✅" if matched else "⚠️"
+            st.write(f"{icon} {t(pos_key if matched else neg_key)}")
+
+    st.markdown(f'<div class="detail-section-header">📷 {t("detail_photos_header")}</div>', unsafe_allow_html=True)
+    photos = get_destination_photos(dest.name_en)
+    if not photos:
+        st.caption(t("detail_photo_none"))
+    else:
+        idx_key = f"carousel_idx_{dest_id}"
+        idx = st.session_state.get(idx_key, 0) % len(photos)
+        photo = photos[idx]
+        st.markdown(f'<img src="{photo["image_url"]}" class="detail-carousel-img">', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="detail-carousel-counter">'
+            f'{t("detail_photo_counter").format(i=idx + 1, n=len(photos))} — {_photo_credit_html(photo)}'
+            f'</div>', unsafe_allow_html=True,
+        )
+        nav_cols = st.columns([1, 1, 5])
+        if nav_cols[0].button("◀", key=f"prev_{dest_id}", use_container_width=True, disabled=len(photos) < 2):
+            st.session_state[idx_key] = (idx - 1) % len(photos)
+            st.rerun()
+        if nav_cols[1].button("▶", key=f"next_{dest_id}", use_container_width=True, disabled=len(photos) < 2):
+            st.session_state[idx_key] = (idx + 1) % len(photos)
+            st.rerun()
+
+    st.markdown(f'<div class="detail-section-header">📖 {t("detail_general_info_header")}</div>', unsafe_allow_html=True)
+    summary = get_country_summary(dest.name_en)
+    if summary:
+        st.write(summary["extract"])
+        if summary.get("page_url"):
+            st.markdown(f"[{t('detail_read_more')}]({summary['page_url']})")
+    else:
+        st.caption(t("detail_general_info_missing"))
+
+    st.markdown(f'<div class="detail-section-header">💱 {t("detail_currency_header")}</div>', unsafe_allow_html=True)
+    rate = dest.currency_rate.rate_to_pln if dest.currency_rate else None
+    rate_text = f" — 1 {dest.currency_code} ≈ {rate:.4f} PLN" if rate else ""
+    st.write(f"{t('col_currency')}: {dest.currency_code}{rate_text}")
+
+    st.markdown(f'<div class="detail-section-header">🛂 {t("detail_msz_header")}</div>', unsafe_allow_html=True)
+    msz_level = max((w.level for w in dest.msz_warnings), default=1)
+    msz_message = dest.msz_warnings[-1].message_pl if lang == "pl" else (
+        dest.msz_warnings[-1].message_en if dest.msz_warnings else "")
+    st.write(f"{t('col_msz_level')}: {msz_level}/4")
+    st.caption(msz_message)
+    with st.expander(t("msz_info_header")):
+        st.caption(t("msz_info_caption"))
+
+    st.markdown(f'<div class="detail-section-header">🌦️ {t("detail_seasonal_header")}</div>', unsafe_allow_html=True)
+    risks = sorted(dest.seasonal_risks, key=lambda r: r.month)
+    if not risks:
+        st.caption(t("detail_seasonal_none"))
+    else:
+        for r in risks:
+            risk_type = r.risk_type_pl if lang == "pl" else r.risk_type_en
+            desc = (r.description_pl if lang == "pl" else r.description_en) or ""
+            st.write(f"**{month_name(r.month)}** — {risk_type} ({r.severity}/3)")
+            if desc:
+                st.caption(desc)
+
+    st.markdown(f'<div class="detail-section-header">🗓️ {t("detail_recommended_period_header")}</div>',
+                unsafe_allow_html=True)
+    ok_months = set(low_risk_months(dest, max_severity=1))
+    risky_months = [m for m in range(1, 13) if m not in ok_months]
+    if not risky_months:
+        st.write(t("detail_recommended_period_all_clear"))
+    else:
+        st.write(t("detail_recommended_period_avoid").format(
+            months=", ".join(month_name(m) for m in risky_months)))
+
+    travellers_n = st.session_state.get("current_travellers")
+    if travellers_n:
+        st.caption(t("detail_travellers_note").format(n=travellers_n))
+
+    st.markdown(f'<div class="detail-section-header">ℹ️ {t("detail_not_covered_header")}</div>',
+                unsafe_allow_html=True)
+    st.caption(t("detail_not_covered"))
+
+    st.divider()
+    if st.button(t("detail_close"), key=f"close_{dest_id}", use_container_width=True):
+        _close_detail()
+        st.rerun()
+
+
+# The dialog only actually renders when this fires -- kept as persistent
+# state (see open_detail()) rather than the more obvious-looking "call
+# _detail_dialog() straight from inside each trigger button's if-block",
+# because that pattern breaks as soon as anything *inside* the dialog
+# (the carousel's own prev/next buttons) needs its own st.rerun().
+if st.session_state.get("open_detail_id") is not None:
+    _detail_dialog(st.session_state["open_detail_id"], st.session_state.get("open_detail_scored"))
+
+
+def render_favorites_strip():
+    favorites = st.session_state["favorites"]
+    if not favorites:
+        return
+    fav_destinations = sorted(
+        (d for d in all_destinations if d.destination_id in favorites), key=destination_name,
+    )
+    with st.expander(f"⭐ {t('favorites_header')} ({len(fav_destinations)})", expanded=False):
+        st.caption(t("favorites_note"))
+        cols = st.columns(4)
+        for idx, d in enumerate(fav_destinations):
+            with cols[idx % 4]:
+                render_photo(d, height_px=100)
+                st.caption(destination_name(d))
+                if st.button(t("card_view_details"), key=f"fav_view_{d.destination_id}",
+                             use_container_width=True):
+                    open_detail(d.destination_id, None)
+
+
+def render_result_card(scored, mode: str):
+    dest = scored.destination
+    dest_id = dest.destination_id
+    with st.container(border=True):
+        col_photo, col_info, col_actions = st.columns([1.2, 3.3, 1])
+        with col_photo:
+            render_photo(dest)
+        with col_info:
+            st.markdown(f"### {destination_name(dest)}")
+            st.markdown(f"**{t('match_' + scored.match_level)}** &nbsp;·&nbsp; "
+                        f"{t('results_score_of').format(score=scored.score)}")
+            for matched, pos_key, neg_key in scored.explanation_items():
+                icon = "✅" if matched else "⚠️"
+                st.caption(f"{icon} {t(pos_key if matched else neg_key)}")
+            rate = dest.currency_rate.rate_to_pln if dest.currency_rate else None
+            facts = f"💱 {dest.currency_code}" + (f" (1 ≈ {rate:.4f} PLN)" if rate else "")
+            facts += f" &nbsp;·&nbsp; 🛂 MSZ {scored.current_msz_level}/4"
+            st.markdown(f'<span style="font-size:0.85rem;color:#666">{facts}</span>', unsafe_allow_html=True)
+        with col_actions:
+            if st.button(t("card_view_details"), key=f"details_{mode}_{dest_id}", use_container_width=True):
+                open_detail(dest_id, scored)
+            is_fav = dest_id in st.session_state["favorites"]
+            if st.button(t("favorite_remove") if is_fav else t("favorite_add"),
+                         key=f"fav_{mode}_{dest_id}", use_container_width=True):
+                toggle_favorite(dest_id)
+                st.rerun()
+
+
+# --- Results tab: recommendation OR comparison, same rendering ----------
+with tab_results:
+    render_favorites_strip()
+
+    if not st.session_state["search_done"]:
         st.info(t("results_empty"))
     else:
-        st.subheader(t("results_header"))
-        ranked = rank_destinations(all_destinations, trip_length_days, travel_month, risk_tolerance)
+        mode = "comparison" if chosen_names else "recommendation"
+        if mode == "comparison":
+            name_to_dest = {destination_name(d): d for d in all_destinations}
+            candidates = [name_to_dest[n] for n in chosen_names if n in name_to_dest]
+        else:
+            candidates = all_destinations
 
-        for scored in ranked:
-            dest = scored.destination
-            with st.container(border=True):
-                col_photo, col_info, col_score = st.columns([1.3, 3.2, 1])
-                with col_photo:
-                    render_photo(dest)
-                with col_info:
-                    st.markdown(f"### {destination_name(dest)}")
-                    badges = []
-                    if scored.trip_length_match:
-                        badges.append("✅ " + t("form_trip_length"))
-                    if scored.seasonal_risk_match:
-                        badges.append("✅ " + t("col_seasonal_risk"))
-                    if scored.msz_status_match:
-                        badges.append("✅ " + t("col_msz_level"))
-                    st.write(" · ".join(badges) if badges else "—")
-                with col_score:
-                    st.metric(t("results_score"), f"{scored.score} / 3")
+        ranked = rank_destinations(candidates, trip_length_days, travel_month, risk_tolerance)
 
-# --- Comparison tab --------------------------------------------------
-with tab_compare:
-    st.subheader(t("compare_header"))
-    options = {destination_name(d): d.destination_id for d in all_destinations}
-    chosen_names = st.multiselect(t("compare_select"), options=list(options.keys()))
+        header_key = "results_header_comparison" if mode == "comparison" else "results_header_recommendation"
+        caption_key = "results_mode_caption_comparison" if mode == "comparison" else "results_mode_caption_recommendation"
+        st.subheader(t(header_key))
+        st.caption(t(caption_key))
 
-    if chosen_names:
-        photo_cols = st.columns(len(chosen_names))
-        for col, name in zip(photo_cols, chosen_names):
-            with col:
-                st.markdown(f'<div class="gallery-caption">{name}</div>', unsafe_allow_html=True)
-                render_photo(session.get(Destination, options[name]), height_px=110)
+        if not ranked:
+            st.warning(t("results_no_selected_destinations"))
+        else:
+            for scored in ranked:
+                render_result_card(scored, mode)
 
-        st.caption(f"ℹ️ {t('msz_info_caption')}")
+# --- Explore destinations: search/filter + click-through detail dialog --
+with tab_explore:
+    st.subheader(t("gallery_header"))
+    st.caption(t("gallery_intro"))
 
-        rows = []
-        for name in chosen_names:
-            dest = session.get(Destination, options[name])
-            month_risks = [r for r in dest.seasonal_risks if r.month == travel_month]
-            risk_text = ", ".join(
-                (r.risk_type_pl if st.session_state["lang"] == "pl" else r.risk_type_en)
-                for r in month_risks
-            ) or t("col_none")
-            msz_level = max((w.level for w in dest.msz_warnings), default=1)
-            msz_message = dest.msz_warnings[-1].message_pl if st.session_state["lang"] == "pl" else (
-                dest.msz_warnings[-1].message_en if dest.msz_warnings else "")
-            rows.append({
-                t("col_destination"): name,
-                t("col_region"): dest.region,
-                t("col_currency"): dest.currency_code,
-                t("col_rate"): round(dest.currency_rate.rate_to_pln, 4) if dest.currency_rate else None,
-                t("col_avg_stay"): dest.gus_stats.avg_stay_length_days if dest.gus_stats else None,
-                t("col_msz_level"): msz_level,
-                t("col_msz_message"): msz_message,
-                t("col_seasonal_risk"): risk_text,
-            })
-        st.dataframe(rows, use_container_width=True, hide_index=True)
+    col_search, col_region = st.columns([3, 1])
+    with col_search:
+        search_query = st.text_input(
+            t("explore_search_placeholder"), key="explore_search",
+            label_visibility="collapsed", placeholder=t("explore_search_placeholder"),
+        )
+    with col_region:
+        region_filter = st.segmented_control(
+            "region", options=["all", "europe", "non_europe"],
+            format_func=lambda v: {"all": t("explore_region_all"), "europe": t("explore_region_europe"),
+                                    "non_europe": t("explore_region_non_europe")}[v],
+            default="all", key="explore_region", label_visibility="collapsed",
+        ) or "all"
 
-# --- Info / context tab --------------------------------------------------
+    filtered = [d for d in all_destinations if region_filter == "all" or d.region == region_filter]
+    if search_query.strip():
+        q = search_query.strip().lower()
+        filtered = [d for d in filtered if q in d.name_en.lower() or q in d.name_pl.lower()]
+    filtered = sorted(filtered, key=destination_name)
+
+    if not filtered:
+        st.info(t("explore_no_results"))
+    else:
+        explore_cols = st.columns(4)
+        for idx, dest in enumerate(filtered):
+            with explore_cols[idx % 4]:
+                st.markdown(f'<div class="gallery-caption">{destination_name(dest)}</div>', unsafe_allow_html=True)
+                render_photo(dest, height_px=120)
+                if st.button(t("explore_open"), key=f"explore_open_{dest.destination_id}",
+                             use_container_width=True):
+                    open_detail(dest.destination_id, None)
+                if st.button(t("explore_add_to_compare"), key=f"explore_add_{dest.destination_id}",
+                             use_container_width=True):
+                    name = destination_name(dest)
+                    st.session_state["pending_add_to_compare"] = name
+                    st.toast(t("explore_added_to_compare").format(name=name))
+                    st.rerun()
+
+# --- Contextual data: MSZ explainer + Power BI link ----------------------
 with tab_info:
     st.subheader(t("msz_info_header"))
     st.caption(t("msz_info_caption"))
@@ -201,34 +452,12 @@ with tab_info:
     else:
         st.warning(t("bi_missing"))
 
-    st.subheader(t("gallery_header"))
-    st.caption(t("gallery_intro"))
-    gallery_cols = st.columns(4)
-    for idx, dest in enumerate(sorted(all_destinations, key=destination_name)):
-        with gallery_cols[idx % 4]:
-            st.markdown(f'<div class="gallery-caption">{destination_name(dest)}</div>', unsafe_allow_html=True)
-            render_photo(dest, height_px=120)
-            # Genuinely lazy: an st.expander's body runs on every rerun
-            # regardless of whether it's visually open, so fetching all
-            # 20 destinations' extra photos would mean ~60 Wikipedia
-            # calls on every single interaction anywhere in the app.
-            # A session_state toggle only fetches once actually clicked.
-            show_key = f"show_photos_{dest.destination_id}"
-            if st.button(f"📷 {t('gallery_expand')}", key=f"btn_{dest.destination_id}",
-                         use_container_width=True):
-                st.session_state[show_key] = not st.session_state.get(show_key, False)
-            if st.session_state.get(show_key):
-                photos = get_destination_photos(dest.name_en)
-                if not photos:
-                    st.caption(t("col_none"))
-                for photo in photos:
-                    st.image(photo["image_url"], use_container_width=True)
-                    st.caption(_photo_credit(photo))
-
 # --- About / how it works tab --------------------------------------------------
 with tab_about:
     st.subheader(t("about_header"))
     st.write(t("about_text"))
+    st.subheader(t("about_accounts_header"))
+    st.write(t("about_accounts_text"))
 
 # --- Admin tab --------------------------------------------------
 with tab_admin:
