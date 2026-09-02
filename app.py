@@ -28,9 +28,11 @@ from core.scoring import rank_destinations, low_risk_months
 from core.images import get_landmark_image, get_destination_photos, get_country_summary
 from core.theme import CUSTOM_CSS
 from core.auth import (
-    get_authenticator, persist_new_user, sync_favorites_with_auth,
+    get_authenticator, persist_new_user, sync_session_with_auth,
     add_db_favorite, remove_db_favorite, login_fields, register_fields,
     update_profile, persist_password_change, reset_password_fields,
+    grant_admin_if_code_matches, set_user_blocked, list_all_users_with_stats,
+    get_recent_login_log,
 )
 
 st.set_page_config(page_title="Tourism Decision Support", page_icon="\U0001F30D", layout="wide")
@@ -71,15 +73,18 @@ if "pending_add_to_compare" in st.session_state:
 session = get_session()
 all_destinations = session.query(Destination).all()
 
-# Optional accounts (core/auth.py). A fresh Authenticate object is built
-# from the DB every run (Streamlit reruns the whole script on every
-# interaction, so nothing can persist in memory between runs) and
-# location="unrendered" here just silently checks the re-auth cookie /
-# session state without drawing any widget -- the actual visible
-# login/register form only renders inside the "Konto" tab, and only when
-# not already authenticated. This must run before any tab body (the
-# Favorites strip on the Results tab, rendered further down, needs
-# st.session_state["favorites"] already synced to the logged-in user).
+# Accounts (core/auth.py) -- a login is required to use the app at all
+# (see docs/DEVELOPMENT_DOCUMENTATION.md §9's "Mandatory login"
+# subsection). A fresh Authenticate object is built from the DB every run
+# (Streamlit reruns the whole script on every interaction, so nothing can
+# persist in memory between runs) and location="unrendered" here just
+# silently checks the re-auth cookie / session state without drawing any
+# widget -- the actual visible login/register form renders in the
+# sidebar, further down, only when not already authenticated. This must
+# run before any tab body (Results' Favorites strip, rendered further
+# down, needs st.session_state["favorites"] already synced to the logged-
+# in user; the nav itself needs st.session_state["is_admin"] synced to
+# know whether to offer the Admin page at all).
 authenticator = get_authenticator(session)
 try:
     authenticator.login(location="unrendered")
@@ -92,7 +97,7 @@ except LoginError:
     # expires or is cleared manually -- so drop it and continue anonymous.
     authenticator.cookie_controller.delete_cookie()
     st.session_state["authentication_status"] = None
-sync_favorites_with_auth(session)
+sync_session_with_auth(session, authenticator)
 
 _HERO_LANDMARK_DESTINATIONS = ["France", "Italy", "Greece", "Egypt"]
 
@@ -202,12 +207,15 @@ def _close_profile():
 
 
 def _require_login() -> bool:
-    """Gate for every tab body except About: the app now requires a logged-in
-    account to be used at all (not just to persist Favorites across visits,
-    the original opt-in design -- see docs/DEVELOPMENT_DOCUMENTATION.md §9
-    vs. the later, stricter requirement this replaces it with). Shows a
-    locked message and returns False when not authenticated, so callers can
-    write `with tab_x: if _require_login(): <real content>`."""
+    """Gate for every page except About and Admin: the app now requires a
+    logged-in account to be used at all (not just to persist Favorites
+    across visits, the original opt-in design -- see
+    docs/DEVELOPMENT_DOCUMENTATION.md §9 vs. the later, stricter
+    requirement this replaces it with). Shows a locked message and
+    returns False when not authenticated, so callers can write
+    `if active_page == "x": if _require_login(): <real content>`. Admin
+    doesn't use this: it's gated on is_admin directly, and isn't even
+    offered as a nav option unless that's already true."""
     if not st.session_state.get("authentication_status"):
         st.info(t("locked_feature_message"))
         return False
@@ -274,7 +282,18 @@ with st.sidebar:
                                key="find_destinations_btn")
         if submitted:
             st.session_state["search_done"] = True
+            # Jumps straight to the Results page on submit -- this runs
+            # before main_nav's own widget is instantiated later in the
+            # script (see the nav section below), so setting its
+            # session_state value here is safe rather than hitting
+            # StreamlitWidgetAlreadyInstantiatedError. Requested directly:
+            # "the find destination button should be linked to result
+            # page because right now it doesnt show destination except
+            # you are in result page".
+            st.session_state["main_nav"] = "results"
     else:
+        if st.session_state.pop("account_blocked", False):
+            st.error(t("account_blocked_message"))
         st.session_state.setdefault("auth_mode", "login")
         with st.expander(f"👤 {t('account_sidebar_prompt')}", expanded=True):
             # location="main" here (not "sidebar") is deliberate:
@@ -289,7 +308,10 @@ with st.sidebar:
             # container instead, so nesting one-at-a-time inside this expander
             # actually works.
             if st.session_state.pop("just_registered", False):
-                st.success(t("account_register_success"))
+                if st.session_state.pop("just_registered_admin", False):
+                    st.success(t("account_admin_granted"))
+                else:
+                    st.success(t("account_register_success"))
 
             if st.session_state["auth_mode"] == "login":
                 authenticator.login(location="main", key="sidebar_login_form",
@@ -306,10 +328,25 @@ with st.sidebar:
                         location="main", captcha=False, password_hint=False,
                         key="sidebar_register_form", fields=register_fields(st.session_state["lang"]),
                     )
+                    # Outside register_user()'s own st.form() -- its public
+                    # API renders a fixed set of fields with no hook to
+                    # inject an extra one, so this is a separate widget
+                    # collected independently and read at the same point
+                    # register_user()'s submission is detected below.
+                    # "Admin code" being verified "in the login or signup
+                    # stage" (as requested) means here: matching it against
+                    # ADMIN_PASSWORD grants is_admin permanently on the new
+                    # account, so it's never asked again after this.
+                    admin_code = st.text_input(
+                        t("account_admin_code_label"), type="password",
+                        key="sidebar_register_admin_code",
+                    )
                     if _sidebar_new_username:
                         persist_new_user(session, authenticator, _sidebar_new_username, _sidebar_new_name)
+                        granted = grant_admin_if_code_matches(session, _sidebar_new_username, admin_code)
                         st.session_state["auth_mode"] = "login"
                         st.session_state["just_registered"] = True
+                        st.session_state["just_registered_admin"] = granted
                         st.rerun()
                 except Exception as exc:
                     st.error(t("account_register_error").format(error=str(exc)))
@@ -341,10 +378,38 @@ if st.session_state.get("authentication_status"):
 
 render_hero()
 
-tab_results, tab_explore, tab_info, tab_account, tab_about, tab_admin = st.tabs([
-    f"🏆 {t('nav_results')}", f"🧭 {t('nav_explore')}", f"📊 {t('info_header')}",
-    f"👤 {t('nav_account')}", f"ℹ️ {t('about_header')}", f"🔐 {t('nav_admin')}",
-])
+# Page nav, as a segmented control bound to st.session_state["main_nav"]
+# rather than st.tabs() -- st.tabs() has no supported way to select a tab
+# from Python, which the "Find destinations" button above needs (it sets
+# main_nav="results" before this widget is created each run, jumping the
+# user to the Results page on submit) and which showing/hiding "Admin"
+# based on account privilege also needs (a plain Python list, filtered
+# before the widget is built, rather than trying to make one of several
+# static st.tabs() panels invisible after the fact).
+_NAV_ITEMS = [
+    ("results", f"🏆 {t('nav_results')}"),
+    ("explore", f"🧭 {t('nav_explore')}"),
+    ("info", f"📊 {t('info_header')}"),
+    ("account", f"👤 {t('nav_account')}"),
+    ("about", f"ℹ️ {t('about_header')}"),
+]
+if st.session_state.get("is_admin"):
+    _NAV_ITEMS.append(("admin", f"🔐 {t('nav_admin')}"))
+_nav_keys = [key for key, _ in _NAV_ITEMS]
+_nav_labels = dict(_NAV_ITEMS)
+
+st.session_state.setdefault("main_nav", "results")
+if st.session_state["main_nav"] not in _nav_keys:
+    # E.g. an admin was viewing the Admin page and lost admin status
+    # (or logged out) mid-session -- fall back rather than pointing at a
+    # page that's no longer offered.
+    st.session_state["main_nav"] = "results"
+
+active_page = st.segmented_control(
+    "nav", options=_nav_keys, format_func=lambda k: _nav_labels[k],
+    label_visibility="collapsed", key="main_nav",
+) or "results"
+st.divider()
 
 
 # --- destination detail dialog: shared by Results cards, the Favorites
@@ -557,8 +622,8 @@ def render_result_card(scored, mode: str):
                 st.rerun()
 
 
-# --- Results tab: recommendation OR comparison, same rendering ----------
-with tab_results:
+# --- Results page: recommendation OR comparison, same rendering ----------
+if active_page == "results":
     if _require_login():
         render_favorites_strip()
 
@@ -586,7 +651,7 @@ with tab_results:
                     render_result_card(scored, mode)
 
 # --- Explore destinations: search/filter + click-through detail dialog --
-with tab_explore:
+if active_page == "explore":
     if _require_login():
         st.subheader(t("gallery_header"))
         st.caption(t("gallery_intro"))
@@ -630,7 +695,7 @@ with tab_explore:
                         st.rerun()
 
 # --- Contextual data: MSZ explainer + Power BI link ----------------------
-with tab_info:
+if active_page == "info":
     if _require_login():
         st.subheader(t("msz_info_header"))
         st.caption(t("msz_info_caption"))
@@ -644,7 +709,7 @@ with tab_info:
             st.warning(t("bi_missing"))
 
 # --- Account: favorites list, persisted to the DB -----
-with tab_account:
+if active_page == "account":
     if _require_login():
         st.subheader(t("account_favorites_header"))
 
@@ -665,64 +730,96 @@ with tab_account:
                                  use_container_width=True):
                         open_detail(d.destination_id, None)
 
-# --- About / how it works tab --------------------------------------------------
-with tab_about:
+# --- About / how it works page -- unrestricted, see _require_login() -----
+if active_page == "about":
     st.subheader(t("about_header"))
     st.write(t("about_text"))
     st.subheader(t("about_accounts_header"))
     st.write(t("about_accounts_text"))
 
-# --- Admin tab --------------------------------------------------
-with tab_admin:
-    if _require_login():
-        admin_password = os.environ.get("ADMIN_PASSWORD", "admin")
-        if not st.session_state.get("is_admin"):
-            st.subheader(t("admin_login_header"))
-            pw = st.text_input(t("admin_password"), type="password")
-            if st.button(t("admin_login_btn")):
-                if pw == admin_password:
-                    st.session_state["is_admin"] = True
-                    st.rerun()
-                else:
-                    st.error(t("admin_login_error"))
-        else:
-            st.subheader(t("admin_risks_header"))
-            if st.button(t("admin_logout")):
-                st.session_state["is_admin"] = False
-                st.rerun()
+# --- Admin page: never offered in the nav (above) unless is_admin, but
+# guarded again here too as defense in depth against a stale nav
+# selection surviving a lost-admin/logout transition. Admin status itself
+# is decided once, at registration (see the sidebar's admin-code field
+# and core.auth.grant_admin_if_code_matches) -- not re-prompted here, per
+# the requirement that it be "verified in the login or signup stage"
+# rather than behind a separate in-app password gate. -------------------
+if active_page == "admin" and st.session_state.get("is_admin"):
+    st.subheader(t("admin_users_header"))
+    st.caption(t("admin_users_blocked_note"))
+    for row in list_all_users_with_stats(session):
+        u = row["user"]
+        with st.container(border=True):
+            cols = st.columns([2, 2, 3, 2, 2, 2])
+            cols[0].markdown(f"**@{u.username}**" + (" 🔐" if u.is_admin else ""))
+            cols[1].write(u.name)
+            cols[2].write(u.email or "—")
+            cols[3].write(f"{t('admin_users_favorites')}: {row['favorites_count']}")
+            last_login = row["last_login_at"].strftime("%Y-%m-%d %H:%M") if row["last_login_at"] \
+                else t("admin_users_never_logged_in")
+            cols[4].write(f"{t('admin_users_last_login')}: {last_login}")
+            status = t("admin_users_status_blocked") if u.is_blocked else t("admin_users_status_active")
+            cols[5].write(status)
 
-            risks = session.query(SeasonalRisk).all()
-            for risk in risks:
-                dest = session.get(Destination, risk.destination_id)
-                cols = st.columns([3, 2, 3, 1, 1])
-                cols[0].write(destination_name(dest))
-                cols[1].write(month_name(risk.month))
-                cols[2].write(risk.risk_type_pl if st.session_state["lang"] == "pl" else risk.risk_type_en)
-                cols[3].write(risk.severity)
-                if cols[4].button(t("admin_delete"), key=f"del_{risk.risk_id}"):
-                    session.delete(risk)
-                    session.commit()
+            with st.expander(t("admin_users_edit_expander")):
+                edit_name = st.text_input(t("profile_name_label"), value=u.name, key=f"admin_edit_name_{u.user_id}")
+                edit_email = st.text_input(t("profile_email_label"), value=u.email or "",
+                                            key=f"admin_edit_email_{u.user_id}")
+                edit_cols = st.columns(2)
+                if edit_cols[0].button(t("profile_save_btn"), key=f"admin_save_user_{u.user_id}",
+                                        use_container_width=True):
+                    update_profile(session, u.username, edit_name.strip(), edit_email.strip())
+                    st.success(t("profile_saved"))
+                    st.rerun()
+                block_label = t("admin_users_unblock_btn") if u.is_blocked else t("admin_users_block_btn")
+                if edit_cols[1].button(block_label, key=f"admin_block_user_{u.user_id}",
+                                        use_container_width=True):
+                    set_user_blocked(session, u.user_id, not u.is_blocked)
                     st.rerun()
 
-            st.divider()
-            st.markdown(f"**{t('admin_add_risk')}**")
-            with st.form("add_risk_form", clear_on_submit=True):
-                dest_options = {destination_name(d): d.destination_id for d in all_destinations}
-                new_dest_name = st.selectbox(t("col_destination"), options=list(dest_options.keys()))
-                new_month = st.selectbox(t("form_travel_month"), options=list(range(1, 13)),
-                                          format_func=month_name)
-                new_type = st.text_input(t("col_seasonal_risk"))
-                new_severity = st.slider(t("results_score"), min_value=1, max_value=3, value=2)
-                if st.form_submit_button(t("admin_add_risk")):
-                    session.add(SeasonalRisk(
-                        destination_id=dest_options[new_dest_name],
-                        month=new_month,
-                        risk_type_en=new_type, risk_type_pl=new_type,
-                        severity=new_severity,
-                    ))
-                    session.commit()
-                    st.success(t("admin_saved"))
-                    st.rerun()
+    st.divider()
+    st.subheader(t("admin_login_log_header"))
+    login_log = get_recent_login_log(session, limit=50)
+    if not login_log:
+        st.caption(t("admin_login_log_empty"))
+    else:
+        for username, logged_in_at in login_log:
+            st.caption(f"@{username} — {logged_in_at.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    st.divider()
+    st.subheader(t("admin_risks_header"))
+    risks = session.query(SeasonalRisk).all()
+    for risk in risks:
+        dest = session.get(Destination, risk.destination_id)
+        cols = st.columns([3, 2, 3, 1, 1])
+        cols[0].write(destination_name(dest))
+        cols[1].write(month_name(risk.month))
+        cols[2].write(risk.risk_type_pl if st.session_state["lang"] == "pl" else risk.risk_type_en)
+        cols[3].write(risk.severity)
+        if cols[4].button(t("admin_delete"), key=f"del_{risk.risk_id}"):
+            session.delete(risk)
+            session.commit()
+            st.rerun()
+
+    st.divider()
+    st.markdown(f"**{t('admin_add_risk')}**")
+    with st.form("add_risk_form", clear_on_submit=True):
+        dest_options = {destination_name(d): d.destination_id for d in all_destinations}
+        new_dest_name = st.selectbox(t("col_destination"), options=list(dest_options.keys()))
+        new_month = st.selectbox(t("form_travel_month"), options=list(range(1, 13)),
+                                  format_func=month_name)
+        new_type = st.text_input(t("col_seasonal_risk"))
+        new_severity = st.slider(t("results_score"), min_value=1, max_value=3, value=2)
+        if st.form_submit_button(t("admin_add_risk")):
+            session.add(SeasonalRisk(
+                destination_id=dest_options[new_dest_name],
+                month=new_month,
+                risk_type_en=new_type, risk_type_pl=new_type,
+                severity=new_severity,
+            ))
+            session.commit()
+            st.success(t("admin_saved"))
+            st.rerun()
 
 # --- footer --------------------------------------------------
 rates_fetched = [d.currency_rate.fetched_at for d in all_destinations

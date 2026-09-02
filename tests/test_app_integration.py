@@ -40,7 +40,8 @@ def _mock_wikipedia_get(url, params=None, headers=None, timeout=None):
     return resp
 
 
-def _login(at, username="apptest_user", name="AppTest User", email="apptest@example.com"):
+def _login(at, username="apptest_user", name="AppTest User", email="apptest@example.com",
+           is_admin=False):
     """Pre-seeds AppTest's session_state as an already-authenticated user,
     bypassing the real login form entirely. Safe to call before the first
     .run(): authenticator.login(location="unrendered")'s own cookie-check
@@ -48,14 +49,17 @@ def _login(at, username="apptest_user", name="AppTest User", email="apptest@exam
     core/auth.py and the app.py comment on the LoginError fix), so setting
     it up front makes that bootstrap call a no-op instead of touching a
     real cookie or the DB. auth_synced_for is pre-set to the same username
-    so sync_favorites_with_auth() doesn't issue a real (harmless, but
-    pointless) DB lookup for a username that doesn't exist in whichever
-    database this test run happens to be pointed at."""
+    so sync_session_with_auth() doesn't issue a real (harmless, but
+    pointless) DB lookup/write for a username that doesn't exist in
+    whichever database this test run happens to be pointed at -- which
+    also means is_admin has to be pre-seeded directly here rather than
+    relying on that DB-backed sync to set it."""
     at.session_state["authentication_status"] = True
     at.session_state["username"] = username
     at.session_state["name"] = name
     at.session_state["email"] = email
     at.session_state["auth_synced_for"] = username
+    at.session_state["is_admin"] = is_admin
 
 
 def _st_element_exists(accessor, key):
@@ -98,17 +102,46 @@ def test_default_language_is_polish_and_switches_to_english():
     assert "Outbound Tourism Decision Support" in _all_markdown_html(at)
 
 
-def test_tabs_render_recommendation_comparison_info_about_admin():
+def test_nav_offers_five_pages_and_admin_only_for_admins():
+    """The main nav is a segmented control bound to main_nav, not st.tabs()
+    (st.tabs() has no supported way to select a page from Python, which
+    both "Find destinations" jumping to Results and hiding Admin from
+    non-admins need). Five pages always; a sixth (Admin) only once
+    is_admin is set."""
     at = AppTest.from_file(APP_PATH)
     at.run(timeout=30)
     assert not at.exception
-    # 6 top-level tabs: Results, Explore, Contextual data, Account, About,
-    # Admin. The sidebar's login/register widget toggles between the two
-    # forms with a plain button rather than nested st.tabs (see app.py's
-    # comment on why -- streamlit-authenticator's location="sidebar" bypasses
-    # nested containers, so real st.tabs() there rendered both forms
-    # unconditionally), so there's nothing left to flatten in from there.
-    assert len(at.tabs) == 6
+    nav = at.segmented_control(key="main_nav")
+    # .options holds the *labels* (format_func output), not the raw page
+    # keys -- "Panel administratora" is the Admin page's Polish label.
+    assert len(nav.options) == 5
+    assert "Panel administratora" not in nav.options
+
+    at2 = AppTest.from_file(APP_PATH)
+    _login(at2, is_admin=True)
+    at2.run(timeout=30)
+    assert not at2.exception
+    nav2 = at2.segmented_control(key="main_nav")
+    assert len(nav2.options) == 6
+    assert "Panel administratora" in nav2.options
+
+
+def test_find_destinations_jumps_to_results_page():
+    """Clicking "Find destinations" while on a different page navigates to
+    Results, not just marks a search done that you'd only see by
+    separately clicking over to Results yourself. Reported directly: "it
+    doesnt show destination except you are in result page"."""
+    with patch("core.images.requests.get", side_effect=_mock_wikipedia_get):
+        at = AppTest.from_file(APP_PATH)
+        _login(at)
+        at.session_state["main_nav"] = "explore"
+        at.run(timeout=30)
+        assert at.session_state["main_nav"] == "explore"
+
+        at.sidebar.button(key="find_destinations_btn").click().run(timeout=30)
+        assert not at.exception
+        assert at.session_state["main_nav"] == "results"
+        assert "Ranking rekomendacji" in _all_markdown_html(at)
 
 
 def test_unified_form_recommendation_mode_ranks_all_destinations():
@@ -161,19 +194,28 @@ def test_logged_out_sidebar_has_no_criteria_form():
     assert len(at.sidebar.slider) == 0  # the trip-length slider isn't rendered at all
 
 
-def test_logged_out_tabs_show_locked_message_not_real_content():
-    """Results/Explore/Contextual data/Account/Admin all show the same
-    locked message instead of their real, interactive content when logged
-    out -- "any clicks to result, data or explore can't work" without an
-    account. Only About stays unrestricted (see the separate test below)."""
+def test_logged_out_pages_show_locked_message_not_real_content():
+    """Results/Explore/Contextual data/Account all show the locked message
+    instead of their real, interactive content when logged out -- "any
+    clicks to result, data or explore can't work" without an account.
+    Only one page's content renders at a time now (the nav is a plain
+    Python if/elif on active_page, not st.tabs(), which used to render
+    every tab's content simultaneously just CSS-hidden) so each gated page
+    has to be selected and checked individually. Admin isn't included
+    here: it's not even reachable via the nav while logged out (see
+    test_nav_offers_five_pages_and_admin_only_for_admins). Only About
+    stays unrestricted (see the separate test below)."""
+    for page in ["results", "explore", "info", "account"]:
+        at = AppTest.from_file(APP_PATH)
+        at.session_state["main_nav"] = page
+        at.run(timeout=30)
+        assert not at.exception, f"page={page}"
+        locked = [el.value for el in at.info if "Zaloguj się w panelu bocznym" in el.value]
+        assert len(locked) == 1, f"page={page}"
+    # None of Explore's search box should have rendered while on that page.
     at = AppTest.from_file(APP_PATH)
+    at.session_state["main_nav"] = "explore"
     at.run(timeout=30)
-    assert not at.exception
-    locked_messages = [el.value for el in at.info if "Zaloguj się w panelu bocznym" in el.value]
-    # Results, Explore, Contextual data, Account, Admin -- 5 gated tabs
-    # (every tab except About, which is informational-only).
-    assert len(locked_messages) == 5
-    # None of Explore's search box or region filter should have rendered.
     with pytest.raises(KeyError):
         at.text_input(key="explore_search")
 
@@ -190,11 +232,13 @@ def test_logged_in_shows_profile_button_and_full_sidebar():
     assert at.button(key="open_profile_btn") is not None
 
 
-def test_about_tab_accessible_without_login():
-    """The About/"How it works" tab is informational only (no interactive
-    features), so it deliberately stays outside the login gate."""
+def test_about_page_accessible_without_login():
+    """The About/"How it works" page is informational only (no interactive
+    features), so it deliberately stays outside the login gate -- reachable
+    from the nav (which is always shown, even logged out) and renders its
+    real content rather than a locked message."""
     at = AppTest.from_file(APP_PATH)
+    at.session_state["main_nav"] = "about"
     at.run(timeout=30)
     assert not at.exception
-    # The tab's own header text should render regardless of login state.
     assert "Jak to działa" in _all_markdown_html(at)

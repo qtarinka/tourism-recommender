@@ -61,6 +61,8 @@ CREATE TABLE users (
     name            VARCHAR(120) NOT NULL,
     email           VARCHAR(200),
     password_hash   VARCHAR(200) NOT NULL,
+    is_admin        BOOLEAN NOT NULL DEFAULT FALSE,
+    is_blocked      BOOLEAN NOT NULL DEFAULT FALSE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -72,8 +74,15 @@ CREATE TABLE user_favorites (
     UNIQUE (user_id, destination_id)
 );
 
+CREATE TABLE user_login_log (
+    log_id          SERIAL PRIMARY KEY,
+    user_id         INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    logged_in_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE INDEX idx_gus_stats_destination ON gus_tourism_stats(destination_id);
 CREATE INDEX idx_msz_warnings_destination ON msz_safety_warnings(destination_id);
 CREATE INDEX idx_seasonal_risks_destination_month ON seasonal_risks(destination_id, month);
 CREATE INDEX idx_currency_rates_destination ON currency_rates(destination_id);
 CREATE INDEX idx_user_favorites_user ON user_favorites(user_id);
+CREATE INDEX idx_user_login_log_user ON user_login_log(user_id);

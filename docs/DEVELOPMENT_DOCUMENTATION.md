@@ -609,6 +609,127 @@ rather than extends, the opt-in design above.
   sidebar, the logged-out locked tabs, the logged-in Profile button, and
   About's unrestricted access — full suite (36 tests) green.
 
+### Results-page navigation and admin user management
+
+Two more requests on top of the mandatory-login work above: "Find
+destinations" wasn't actually taking the user to the Results page (only
+marking a search as done -- you'd see nothing change unless you separately
+clicked over to Results yourself), and the admin side needed to become
+real user management (view accounts, edit them, block them, see login
+activity) rather than a bare seasonal-risk-only panel behind a shared
+password, with that panel now required to be completely invisible to
+non-admin accounts and admin status itself "verified in the login or
+signup stage."
+
+**What changed:**
+
+- **`st.tabs()` replaced with a session-state-driven nav.** This was the
+  real blocker for "Find destinations" jumping to Results:
+  `st.tabs()` has no supported way to select a tab from Python, so there
+  was no way for the sidebar's submit button to say "and now show
+  Results." The nav is now `st.segmented_control(..., key="main_nav")`
+  built from a plain Python list of `(page_key, label)` pairs, with each
+  page's body switched to `if active_page == "results": ...` etc. instead
+  of `with tab_results: ...`. The submit button sets
+  `st.session_state["main_nav"] = "results"` before that widget is
+  instantiated later in the same script run (safe for the same reason
+  `pending_add_to_compare` staging is -- see §8 -- Streamlit only rejects
+  writing to a widget's key *after* it's already rendered this run, not
+  before), so clicking it now genuinely takes you to the Results page in
+  the same click, not just marks a flag you'd only see by navigating there
+  yourself. One behavioral side effect worth noting: `st.tabs()` used to
+  render *every* tab's content on every run regardless of which was
+  visually active (confirmed back in §8/§11's bug logs, e.g. the "Explore"
+  tab's Wikipedia photo fetches happening even while viewing Results) --
+  the new nav only renders the active page's content, which is both more
+  correct for a single-page-at-a-time model and incidentally cheaper.
+- **Admin visibility moved from a runtime password prompt to a registration-
+  time account flag.** `users.is_admin` (new column) is set once, at
+  registration, via an optional "Admin code" field checked against the
+  same `ADMIN_PASSWORD` secret the old in-app prompt used (no less secure
+  than before, just relocated to match "verified in the login or signup
+  stage" as requested) -- `core.auth.grant_admin_if_code_matches()`. The
+  nav's page list only includes "Admin" when
+  `st.session_state["is_admin"]` is true, so the page is genuinely absent
+  from the UI for everyone else, not just content-gated like the other
+  pages -- there's nothing to click into in the first place. `is_admin` is
+  loaded into session state once per login (by `sync_session_with_auth()`,
+  renamed from `sync_favorites_with_auth()` since it now does more than
+  favorites -- see below), not re-prompted on every visit.
+- **`users.is_blocked`** (new column) lets an admin cut off a specific
+  account without deleting its data. Enforced in
+  `core.auth.sync_session_with_auth()`, the same function that already
+  reacted once per login/logout transition to sync Favorites: on the run a
+  blocked account's login is detected (via the interactive form *or* the
+  re-auth cookie -- both funnel through this same check before any gated
+  content renders), it's immediately forced back to logged-out
+  (`authentication_status`/`username`/`name` cleared, the re-auth cookie
+  deleted so it can't just silently log back in on the next rerun) with an
+  `account_blocked` flag app.py shows as an error in the sidebar.
+- **`user_login_log`** (new table) gets one row per successful login,
+  written by the same `sync_session_with_auth()` transition check (so once
+  per browser session, not once per script rerun). Feeds the admin panel's
+  "Dziennik logowań" (login log) list and each user's "Ostatnie logowanie"
+  (last login) column.
+- **Admin panel** (`app.py`, the "admin" page) now shows, per user: name,
+  email, favorites count, last login, active/blocked status, an inline
+  "✏️ Edytuj dane" expander (name + email, reusing the same
+  `core.auth.update_profile()` the user-facing profile dialog uses) and a
+  block/unblock button; a recent login log; and the pre-existing seasonal-
+  risk management, unchanged, underneath.
+
+**Bugs found and fixed while building this:** none new this pass -- the
+`location="sidebar"` container-bypass lesson from earlier in this section
+didn't recur (nothing new here uses `location=`), and the segmented-
+control nav swap was verified working on the first implementation, live in
+the browser, without needing a fix-then-reverify cycle.
+
+**Verification performed:**
+
+- Live in the browser: navigated to Explore, clicked "Znajdź kierunki" in
+  the sidebar, confirmed it landed directly on a populated Results page
+  (no separate click to Results needed). Logged out and confirmed "Panel
+  administratora" doesn't appear in the nav at all for a non-admin account
+  (the existing real account created earlier in this project, which
+  predates `is_admin` and correctly defaults to false). Registered a fresh
+  test account with the correct admin code, got the "created with admin
+  privileges" message, logged in, and confirmed the Admin page now appears
+  and shows a real, populated user table (favorites count, a correct real
+  last-login timestamp) with working edit/block controls.
+- The block-enforcement path specifically was verified by script rather
+  than a further round of browser interaction (the browser tooling was
+  intermittently timing out on screenshots throughout this pass): called
+  the real `set_user_blocked()` against the test account, then called the
+  real `sync_session_with_auth()` with session state claiming that account
+  was authenticated, and confirmed `authentication_status`/`username` came
+  back `None` and `account_blocked` came back `True` -- i.e. the exact
+  function app.py calls on every rerun, exercised directly rather than
+  reimplemented as a separate test double.
+- Test account and its login-log rows deleted afterward; the pre-existing
+  real account's data untouched.
+- `tests/test_app_integration.py`: the old `st.tabs()`-counting test was
+  replaced with one asserting the nav has 5 options normally and 6 (with
+  "Panel administratora") once `is_admin` is set; the old "all locked
+  tabs render simultaneously" test was rewritten to select each gated page
+  one at a time (a consequence of the nav no longer rendering every page's
+  content on every run, unlike `st.tabs()`); a new test drives "Find
+  destinations" from a non-Results page and asserts `main_nav` flips to
+  `"results"`. `tests/test_auth.py` gained coverage for
+  `grant_admin_if_code_matches()` (correct/wrong/blank code),
+  `set_user_blocked()`, `list_all_users_with_stats()`, and
+  `get_recent_login_log()`. Full suite: 44 tests green.
+- Schema migration note: `Base.metadata.create_all()` creates missing
+  tables but does not alter existing ones, so the two new columns on the
+  already-existing `users` table needed an explicit `ALTER TABLE ... ADD
+  COLUMN` run once against the real Postgres database (`user_login_log`,
+  being an entirely new table, picked up correctly from `create_all()`
+  alone). Also found and removed a stale local SQLite fallback file
+  (`data/app.db`) left over from early in this project, before `.env`'s
+  `DATABASE_URL` was configured -- pytest's test collection order (some
+  other test file imports `core.db` before `app.py`'s own `load_dotenv()`
+  runs) means that file, not Postgres, is what the test suite actually
+  exercises, and it was still on the pre-migration schema.
+
 ## 10. Setup & running
 
 ```powershell

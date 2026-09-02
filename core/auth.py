@@ -1,10 +1,8 @@
 """
-Optional, real user accounts via streamlit-authenticator (bcrypt-hashed
-passwords, a signed re-auth cookie) layered on top of -- not replacing --
-the session-only Favorites the app already has for anonymous users. Every
-core feature (recommendations, comparison, exploring destinations) works
-with zero account, per the original decision not to make login mandatory;
-this only adds persistence for whoever opts in.
+Real user accounts via streamlit-authenticator (bcrypt-hashed passwords, a
+signed re-auth cookie). A login is required to use the app at all -- see
+docs/DEVELOPMENT_DOCUMENTATION.md §9's "Mandatory login" subsection for
+why this replaced the original opt-in design.
 
 Credentials live in our own `users` table (core/db.py) rather than
 streamlit-authenticator's usual YAML/JSON config file. Streamlit reruns
@@ -21,7 +19,7 @@ import os
 import streamlit as st
 import streamlit_authenticator as stauth
 
-from core.db import User, UserFavorite
+from core.db import User, UserFavorite, UserLoginLog
 
 COOKIE_NAME = "tourism_app_auth"
 
@@ -113,6 +111,27 @@ def persist_new_user(session, authenticator: stauth.Authenticate, username: str,
     session.commit()
 
 
+def grant_admin_if_code_matches(session, username: str, entered_code: str) -> bool:
+    """Called right after persist_new_user(), with whatever the registrant
+    typed into the optional "admin code" field -- admin status is decided
+    at registration time (per the requirement that it be "verified in the
+    login or signup stage"), against the same shared ADMIN_PASSWORD secret
+    the old, now-removed in-app admin password prompt used, so it carries
+    no less security than before, just at a different point in the flow.
+    A blank/non-matching code leaves the new account as an ordinary user --
+    this never raises or blocks registration either way. Returns whether
+    admin was granted, so the caller can show an appropriate message."""
+    admin_password = os.environ.get("ADMIN_PASSWORD", "admin")
+    if not entered_code or entered_code != admin_password:
+        return False
+    user = session.query(User).filter_by(username=username).first()
+    if user is None:
+        return False
+    user.is_admin = True
+    session.commit()
+    return True
+
+
 RESET_PASSWORD_FIELDS = {
     "pl": {
         "Form name": "Zmień hasło", "Current password": "Obecne hasło",
@@ -195,18 +214,98 @@ def remove_db_favorite(session, username: str, destination_id: int):
     session.commit()
 
 
-def sync_favorites_with_auth(session):
-    """Runs once per script rerun, before any tab renders. Keeps
-    st.session_state["favorites"] (the single set every card/strip
-    already reads and writes, unchanged) in step with login state:
-    on the run where a login is first detected, replaces it with that
-    user's persisted favorites from the DB; on the run where a logout is
-    detected, clears it back to an empty anonymous session. Uses a
-    separate "synced_for" marker rather than re-loading from the DB on
-    *every* run so that in-session toggles (which also write straight to
-    the DB via toggle_favorite) aren't immediately overwritten by a
-    reload of what's already there."""
+def set_user_blocked(session, user_id: int, blocked: bool):
+    user = session.get(User, user_id)
+    if user is None:
+        return
+    user.is_blocked = blocked
+    session.commit()
+
+
+def list_all_users_with_stats(session):
+    """One row per user for the admin panel's user-management table:
+    the User row itself, its favorites count, and its most recent login
+    timestamp (None if it's never actually completed a login -- e.g. a
+    freshly registered account). A plain Python loop over a handful of
+    users rather than a JOIN/aggregate query -- this app's scale (a
+    handful of accounts) doesn't warrant the extra query complexity."""
+    users = session.query(User).order_by(User.created_at.desc()).all()
+    rows = []
+    for user in users:
+        fav_count = session.query(UserFavorite).filter_by(user_id=user.user_id).count()
+        last_login = (
+            session.query(UserLoginLog)
+            .filter_by(user_id=user.user_id)
+            .order_by(UserLoginLog.logged_in_at.desc())
+            .first()
+        )
+        rows.append({
+            "user": user,
+            "favorites_count": fav_count,
+            "last_login_at": last_login.logged_in_at if last_login else None,
+        })
+    return rows
+
+
+def get_recent_login_log(session, limit: int = 50):
+    """Most recent successful logins across all users, newest first, for
+    the admin panel's activity view. Returns (username, logged_in_at)
+    pairs rather than raw UserLoginLog rows so the caller doesn't need a
+    second query per row to resolve the username."""
+    rows = (
+        session.query(UserLoginLog, User.username)
+        .join(User, User.user_id == UserLoginLog.user_id)
+        .order_by(UserLoginLog.logged_in_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [(username, log.logged_in_at) for log, username in rows]
+
+
+def sync_session_with_auth(session, authenticator: stauth.Authenticate):
+    """Runs once per script rerun, before any tab renders. On the run
+    where a login is first detected (via the interactive form OR the
+    re-auth cookie -- either way authentication_status flips to True),
+    this is the single place that reacts to it:
+      - blocked accounts are force-logged-out immediately, before any
+        gated content below this call ever renders, with a flag set so
+        app.py can show why;
+      - a UserLoginLog row is recorded (once per browser session, not
+        once per rerun -- see the "synced_for" marker below);
+      - st.session_state["is_admin"] is loaded from the DB;
+      - st.session_state["favorites"] (the set every card/strip reads
+        and writes, unchanged) is replaced with that user's DB-persisted
+        favorites.
+    On the run where a logout is detected, all of the above resets back
+    to an anonymous session. The "synced_for" marker (rather than
+    re-querying on *every* run) is what makes this "once per login/logout
+    transition" instead of "once per interaction" -- without it, an
+    in-session Favorite toggle (which writes straight to the DB via
+    toggle_favorite) would be immediately overwritten by a reload of
+    what's already there, and login events would be logged on every
+    single click instead of once per session."""
     username = st.session_state.get("username") if st.session_state.get("authentication_status") else None
-    if st.session_state.get("auth_synced_for") != username:
-        st.session_state["favorites"] = load_user_favorites(session, username) if username else set()
-        st.session_state["auth_synced_for"] = username
+    if st.session_state.get("auth_synced_for") == username:
+        return
+
+    if username:
+        user = session.query(User).filter_by(username=username).first()
+        if user and user.is_blocked:
+            st.session_state["authentication_status"] = None
+            st.session_state["username"] = None
+            st.session_state["name"] = None
+            st.session_state["account_blocked"] = True
+            st.session_state["auth_synced_for"] = None
+            # Without this, the re-auth cookie (if the block happened via
+            # the cookie path rather than an interactive login) would just
+            # log the same account back in on the very next rerun.
+            authenticator.cookie_controller.delete_cookie()
+            return
+        session.add(UserLoginLog(user_id=user.user_id))
+        session.commit()
+        st.session_state["is_admin"] = bool(user.is_admin) if user else False
+        st.session_state["favorites"] = load_user_favorites(session, username)
+    else:
+        st.session_state["is_admin"] = False
+        st.session_state["favorites"] = set()
+    st.session_state["auth_synced_for"] = username

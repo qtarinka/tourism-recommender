@@ -103,9 +103,13 @@ class CurrencyRate(Base):
 
 
 class User(Base):
-    """Optional accounts (core/auth.py) -- registering/logging in is never
-    required for the app's core features, only for persisting Favorites
-    across sessions/devices instead of the session-only default."""
+    """Accounts (core/auth.py) -- a login is required to use the app at
+    all (see docs/DEVELOPMENT_DOCUMENTATION.md §9's "Mandatory login"
+    subsection); registering also persists Favorites across sessions/
+    devices. is_admin is granted at registration time via a matching
+    admin code (see core.auth.grant_admin_if_code_matches), not editable
+    by the user themselves; is_blocked lets an admin cut off a specific
+    account's access without deleting their data."""
     __tablename__ = "users"
 
     user_id = Column(Integer, primary_key=True)
@@ -113,9 +117,12 @@ class User(Base):
     name = Column(String(120), nullable=False)
     email = Column(String(200), nullable=True)
     password_hash = Column(String(200), nullable=False)
+    is_admin = Column(Boolean, default=False, nullable=False)
+    is_blocked = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     favorites = relationship("UserFavorite", back_populates="user", cascade="all, delete-orphan")
+    login_events = relationship("UserLoginLog", back_populates="user", cascade="all, delete-orphan")
 
 
 class UserFavorite(Base):
@@ -128,6 +135,19 @@ class UserFavorite(Base):
 
     user = relationship("User", back_populates="favorites")
     destination = relationship("Destination")
+
+
+class UserLoginLog(Base):
+    """One row per successful login (recorded once per browser session,
+    not once per script rerun -- see core.auth.sync_session_with_auth),
+    for the admin panel's "user activity" view."""
+    __tablename__ = "user_login_log"
+
+    log_id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.user_id"), nullable=False)
+    logged_in_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    user = relationship("User", back_populates="login_events")
 
 
 def init_db():
