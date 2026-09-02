@@ -72,7 +72,11 @@ def test_tabs_render_recommendation_comparison_info_about_admin():
     at = AppTest.from_file(APP_PATH)
     at.run(timeout=30)
     assert not at.exception
-    assert len(at.tabs) == 5
+    # 6 top-level tabs (Results, Explore, Contextual data, Account, About,
+    # Admin) + 2 more nested inside Account (Log in / Register, only shown
+    # when logged out) -- AppTest's `.tabs` flattens the whole app, not
+    # just the top level.
+    assert len(at.tabs) == 8
 
 
 def test_unified_form_recommendation_mode_ranks_all_destinations():
@@ -84,7 +88,7 @@ def test_unified_form_recommendation_mode_ranks_all_destinations():
         at.run(timeout=30)
         assert at.sidebar.multiselect(key="destinations_multiselect").value == []
 
-        at.sidebar.button[0].click().run(timeout=30)
+        at.sidebar.button(key="find_destinations_btn").click().run(timeout=30)
         assert not at.exception
         html = _all_markdown_html(at)
         assert "Ranking rekomendacji" in html
@@ -102,7 +106,7 @@ def test_unified_form_comparison_mode_ranks_only_selected_destinations():
         at.run(timeout=30)
 
         at.sidebar.multiselect(key="destinations_multiselect").set_value(["Egipt"]).run(timeout=30)
-        at.sidebar.button[0].click().run(timeout=30)
+        at.sidebar.button(key="find_destinations_btn").click().run(timeout=30)
         assert not at.exception
         html = _all_markdown_html(at)
         assert "Porównanie wybranych kierunków" in html

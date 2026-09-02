@@ -14,6 +14,7 @@ import os
 
 import streamlit as st
 from dotenv import load_dotenv
+from streamlit_authenticator.utilities.exceptions import LoginError
 
 # Must run before importing core.db: it reads DATABASE_URL at *import*
 # time (module-level `create_engine(...)`), so .env has to be loaded
@@ -26,6 +27,10 @@ from core.i18n import t, month_name, LANGUAGES
 from core.scoring import rank_destinations, low_risk_months
 from core.images import get_landmark_image, get_destination_photos, get_country_summary
 from core.theme import CUSTOM_CSS
+from core.auth import (
+    get_authenticator, persist_new_user, sync_favorites_with_auth,
+    add_db_favorite, remove_db_favorite, login_fields, register_fields,
+)
 
 st.set_page_config(page_title="Tourism Decision Support", page_icon="\U0001F30D", layout="wide")
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -64,6 +69,29 @@ if "pending_add_to_compare" in st.session_state:
 
 session = get_session()
 all_destinations = session.query(Destination).all()
+
+# Optional accounts (core/auth.py). A fresh Authenticate object is built
+# from the DB every run (Streamlit reruns the whole script on every
+# interaction, so nothing can persist in memory between runs) and
+# location="unrendered" here just silently checks the re-auth cookie /
+# session state without drawing any widget -- the actual visible
+# login/register form only renders inside the "Konto" tab, and only when
+# not already authenticated. This must run before any tab body (the
+# Favorites strip on the Results tab, rendered further down, needs
+# st.session_state["favorites"] already synced to the logged-in user).
+authenticator = get_authenticator(session)
+try:
+    authenticator.login(location="unrendered")
+except LoginError:
+    # The browser's re-auth cookie names a username that no longer has a
+    # matching row in `users` (e.g. the account was deleted, or this is a
+    # stale cookie from before a DB reset). streamlit-authenticator raises
+    # rather than just treating that as logged-out, and would otherwise
+    # crash the whole app on every rerun for that browser until the cookie
+    # expires or is cleared manually -- so drop it and continue anonymous.
+    authenticator.cookie_controller.delete_cookie()
+    st.session_state["authentication_status"] = None
+sync_favorites_with_auth(session)
 
 _HERO_LANDMARK_DESTINATIONS = ["France", "Italy", "Greece", "Egypt"]
 
@@ -125,10 +153,15 @@ def render_hero():
 
 def toggle_favorite(dest_id):
     favs = st.session_state["favorites"]
+    username = st.session_state.get("username") if st.session_state.get("authentication_status") else None
     if dest_id in favs:
         favs.discard(dest_id)
+        if username:
+            remove_db_favorite(session, username, dest_id)
     else:
         favs.add(dest_id)
+        if username:
+            add_db_favorite(session, username, dest_id)
 
 
 def open_detail(dest_id, scored=None):
@@ -166,6 +199,36 @@ with st.sidebar:
     )
     st.session_state["lang"] = lang_choice
 
+    # Account status/login -- placed at the very top of the sidebar (the
+    # first thing rendered on load, in every tab) rather than tucked
+    # inside the "Konto" tab alone, so it's actually visible without
+    # having to go looking for it.
+    if st.session_state.get("authentication_status"):
+        st.success(t("account_logged_in_as").format(
+            name=st.session_state.get("name", ""), username=st.session_state.get("username", "")))
+        authenticator.logout(t("account_logout"), location="sidebar", key="sidebar_logout_btn")
+    else:
+        with st.expander(f"👤 {t('account_sidebar_prompt')}"):
+            sidebar_login_tab, sidebar_register_tab = st.tabs(
+                [t("account_login_tab"), t("account_register_tab")])
+            with sidebar_login_tab:
+                authenticator.login(location="sidebar", key="sidebar_login_form",
+                                     fields=login_fields(st.session_state["lang"]))
+                if st.session_state.get("authentication_status") is False:
+                    st.error(t("account_login_error"))
+            with sidebar_register_tab:
+                try:
+                    _, _sidebar_new_username, _sidebar_new_name = authenticator.register_user(
+                        location="sidebar", captcha=False, password_hint=False,
+                        key="sidebar_register_form", fields=register_fields(st.session_state["lang"]),
+                    )
+                    if _sidebar_new_username:
+                        persist_new_user(session, authenticator, _sidebar_new_username, _sidebar_new_name)
+                        st.success(t("account_register_success"))
+                except Exception as exc:
+                    st.error(t("account_register_error").format(error=str(exc)))
+    st.divider()
+
     st.markdown(f'<div class="pref-card-header">🧭 {t("form_header")}</div>', unsafe_allow_html=True)
     st.caption(t("form_intro"))
 
@@ -196,15 +259,16 @@ with st.sidebar:
     )
     st.caption(t("form_destinations_help"))
 
-    submitted = st.button(f"🔎 {t('form_submit')}", type="primary", use_container_width=True)
+    submitted = st.button(f"🔎 {t('form_submit')}", type="primary", use_container_width=True,
+                           key="find_destinations_btn")
     if submitted:
         st.session_state["search_done"] = True
 
 render_hero()
 
-tab_results, tab_explore, tab_info, tab_about, tab_admin = st.tabs([
+tab_results, tab_explore, tab_info, tab_account, tab_about, tab_admin = st.tabs([
     f"🏆 {t('nav_results')}", f"🧭 {t('nav_explore')}", f"📊 {t('info_header')}",
-    f"ℹ️ {t('about_header')}", f"🔐 {t('nav_admin')}",
+    f"👤 {t('nav_account')}", f"ℹ️ {t('about_header')}", f"🔐 {t('nav_admin')}",
 ])
 
 
@@ -330,7 +394,10 @@ def render_favorites_strip():
         (d for d in all_destinations if d.destination_id in favorites), key=destination_name,
     )
     with st.expander(f"⭐ {t('favorites_header')} ({len(fav_destinations)})", expanded=False):
-        st.caption(t("favorites_note"))
+        if st.session_state.get("authentication_status"):
+            st.caption(t("account_favorites_persisted_note"))
+        else:
+            st.caption(t("favorites_note"))
         cols = st.columns(4)
         for idx, d in enumerate(fav_destinations):
             with cols[idx % 4]:
@@ -451,6 +518,34 @@ with tab_info:
         st.link_button(f"📊 {t('bi_open_link')}", report_url)
     else:
         st.warning(t("bi_missing"))
+
+# --- Account: optional login/register, persists Favorites to the DB -----
+with tab_account:
+    if st.session_state.get("authentication_status"):
+        st.subheader(t("account_favorites_header"))
+        st.write(t("account_logged_in_as").format(
+            name=st.session_state.get("name", ""), username=st.session_state.get("username", "")))
+        authenticator.logout(t("account_logout"), location="main", key="account_logout_btn")
+
+        favorites = st.session_state["favorites"]
+        if not favorites:
+            st.info(t("account_favorites_empty"))
+        else:
+            st.caption(t("account_favorites_persisted_note"))
+            fav_destinations = sorted(
+                (d for d in all_destinations if d.destination_id in favorites), key=destination_name,
+            )
+            acct_cols = st.columns(4)
+            for idx, d in enumerate(fav_destinations):
+                with acct_cols[idx % 4]:
+                    render_photo(d, height_px=100)
+                    st.caption(destination_name(d))
+                    if st.button(t("card_view_details"), key=f"acct_view_{d.destination_id}",
+                                 use_container_width=True):
+                        open_detail(d.destination_id, None)
+    else:
+        st.caption(t("account_not_logged_in_intro"))
+        st.info(f"👈 {t('account_use_sidebar')}")
 
 # --- About / how it works tab --------------------------------------------------
 with tab_about:

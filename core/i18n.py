@@ -25,6 +25,7 @@ STRINGS = {
     "nav_results": {"pl": "Wyniki", "en": "Results"},
     "nav_explore": {"pl": "Poznaj kierunki", "en": "Explore destinations"},
     "nav_admin": {"pl": "Panel administratora", "en": "Admin panel"},
+    "nav_account": {"pl": "Konto", "en": "Account"},
 
     # --- unified criteria form (sidebar) -----------------------------
     "form_header": {"pl": "Twoje kryteria podróży", "en": "Your travel criteria"},
@@ -249,22 +250,53 @@ STRINGS = {
     },
     "about_accounts_header": {"pl": "Konta użytkowników i zapisywanie wyników", "en": "User accounts & saving results"},
     "about_accounts_text": {
-        "pl": "Ta wersja aplikacji nie wymaga konta do korzystania z rekomendacji, porównań ani "
-              "eksploracji kierunków. Funkcja „Zapisz” na kartach kierunków działa już teraz, ale "
-              "przechowuje wybory tylko w bieżącej sesji przeglądarki (resetuje się po jej "
-              "zamknięciu) — to świadomy, prosty wybór, żeby nie komplikować głównej funkcji "
-              "aplikacji logowaniem. Prawdziwe konta (zapamiętujące ulubione kierunki i wyniki "
-              "między wizytami) wymagałyby dodania tabeli użytkowników, bezpiecznego "
-              "przechowywania haseł oraz powiązania zapisanych elementów z kontem — architektura "
-              "bazy danych już to obsłuży bez większych zmian, jeśli kiedyś zajdzie taka potrzeba.",
-        "en": "This version of the app doesn't require an account for recommendations, "
-              "comparisons, or exploring destinations. The “Save” button on destination cards "
-              "already works, but only keeps your picks for the current browser session (resets "
-              "when you close it) — a deliberate, simple choice so the core features don't need "
-              "a login. Real accounts (remembering favorites and results across visits) would "
-              "need a users table, secure password storage, and linking saved items to an "
-              "account — the database architecture already supports adding that without major "
-              "changes, if it's ever needed.",
+        "pl": "Konto jest całkowicie opcjonalne — rekomendacje, porównania i eksploracja "
+              "kierunków działają bez logowania, a przycisk „Zapisz” zawsze zapisuje wybór "
+              "przynajmniej w bieżącej sesji przeglądarki. Jeśli założysz konto w zakładce "
+              "„Konto”, Twoje zapisane kierunki są dodatkowo zapisywane w bazie danych i wracają "
+              "przy kolejnej wizycie (nawet po zamknięciu przeglądarki) — hasła są haszowane "
+              "(bcrypt), a logowanie działa przez podpisany plik cookie. Bez konta zapisane "
+              "kierunki znikają po zamknięciu karty przeglądarki.",
+        "en": "An account is entirely optional — recommendations, comparisons, and exploring "
+              "destinations all work without logging in, and the “Save” button always keeps your "
+              "pick for at least the current browser session. If you create an account in the "
+              "“Account” tab, your saved destinations are additionally stored in the database and "
+              "come back on your next visit (even after closing the browser) — passwords are "
+              "hashed (bcrypt) and login works via a signed cookie. Without an account, saved "
+              "destinations disappear when you close the browser tab.",
+    },
+    "account_not_logged_in_intro": {
+        "pl": "Zaloguj się, aby Twoje zapisane kierunki wracały przy kolejnej wizycie. Bez "
+              "konta „Zapisz” nadal działa, ale tylko w tej sesji przeglądarki.",
+        "en": "Log in so your saved destinations come back on your next visit. Without an "
+              "account, “Save” still works, just only for this browser session.",
+    },
+    "account_sidebar_prompt": {"pl": "Zaloguj się / Zarejestruj się", "en": "Log in / Register"},
+    "account_use_sidebar": {
+        "pl": "Użyj panelu „👤 Zaloguj się / Zarejestruj się” w lewym pasku bocznym, aby się "
+              "zalogować lub założyć konto.",
+        "en": "Use the “👤 Log in / Register” panel in the left sidebar to log in or create an account.",
+    },
+    "account_login_tab": {"pl": "Zaloguj się", "en": "Log in"},
+    "account_register_tab": {"pl": "Zarejestruj się", "en": "Register"},
+    "account_login_error": {"pl": "Nieprawidłowa nazwa użytkownika lub hasło.", "en": "Incorrect username or password."},
+    "account_register_success": {
+        "pl": "Konto utworzone. Przejdź do zakładki „Zaloguj się”, aby się zalogować.",
+        "en": "Account created. Switch to the “Log in” tab to sign in.",
+    },
+    "account_register_error": {"pl": "Nie udało się utworzyć konta: {error}", "en": "Couldn't create the account: {error}"},
+    "account_logged_in_as": {"pl": "Zalogowano jako **{name}** (@{username})", "en": "Logged in as **{name}** (@{username})"},
+    "account_logout": {"pl": "Wyloguj", "en": "Log out"},
+    "account_favorites_header": {"pl": "Twoje zapisane kierunki", "en": "Your saved destinations"},
+    "account_favorites_persisted_note": {
+        "pl": "Te kierunki są zapisane na Twoim koncie i będą tu czekać przy następnej wizycie.",
+        "en": "These are saved to your account and will be here on your next visit.",
+    },
+    "account_favorites_empty": {
+        "pl": "Nie masz jeszcze żadnych zapisanych kierunków. Kliknij „☆ Zapisz” przy dowolnym "
+              "kierunku w zakładce Wyniki lub Poznaj kierunki.",
+        "en": "You haven't saved any destinations yet. Click “☆ Save” on any destination in the "
+              "Results or Explore tab.",
     },
 }
 

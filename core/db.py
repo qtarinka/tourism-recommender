@@ -102,6 +102,34 @@ class CurrencyRate(Base):
     destination = relationship("Destination", back_populates="currency_rate")
 
 
+class User(Base):
+    """Optional accounts (core/auth.py) -- registering/logging in is never
+    required for the app's core features, only for persisting Favorites
+    across sessions/devices instead of the session-only default."""
+    __tablename__ = "users"
+
+    user_id = Column(Integer, primary_key=True)
+    username = Column(String(50), unique=True, nullable=False)
+    name = Column(String(120), nullable=False)
+    email = Column(String(200), nullable=True)
+    password_hash = Column(String(200), nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    favorites = relationship("UserFavorite", back_populates="user", cascade="all, delete-orphan")
+
+
+class UserFavorite(Base):
+    __tablename__ = "user_favorites"
+
+    favorite_id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.user_id"), nullable=False)
+    destination_id = Column(Integer, ForeignKey("destinations.destination_id"), nullable=False)
+    saved_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    user = relationship("User", back_populates="favorites")
+    destination = relationship("Destination")
+
+
 def init_db():
     os.makedirs(os.path.dirname(os.path.abspath(DEFAULT_SQLITE_PATH)), exist_ok=True)
     Base.metadata.create_all(engine)

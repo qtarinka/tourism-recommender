@@ -52,7 +52,28 @@ CREATE TABLE currency_rates (
     fetched_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Optional user accounts (core/auth.py). Registering is never required
+-- for the app's core features -- only for persisting Favorites across
+-- sessions/devices instead of the session-only default.
+CREATE TABLE users (
+    user_id         SERIAL PRIMARY KEY,
+    username        VARCHAR(50) NOT NULL UNIQUE,
+    name            VARCHAR(120) NOT NULL,
+    email           VARCHAR(200),
+    password_hash   VARCHAR(200) NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE user_favorites (
+    favorite_id     SERIAL PRIMARY KEY,
+    user_id         INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    destination_id  INTEGER NOT NULL REFERENCES destinations(destination_id) ON DELETE CASCADE,
+    saved_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (user_id, destination_id)
+);
+
 CREATE INDEX idx_gus_stats_destination ON gus_tourism_stats(destination_id);
 CREATE INDEX idx_msz_warnings_destination ON msz_safety_warnings(destination_id);
 CREATE INDEX idx_seasonal_risks_destination_month ON seasonal_risks(destination_id, month);
 CREATE INDEX idx_currency_rates_destination ON currency_rates(destination_id);
+CREATE INDEX idx_user_favorites_user ON user_favorites(user_id);

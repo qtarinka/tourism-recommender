@@ -54,7 +54,7 @@ for NBP, `feedparser` for the MSZ RSS feed, `python-dotenv` for config.
 
 | Area | Thesis spec | What's implemented | Why |
 |---|---|---|---|
-| Database | PostgreSQL | **Real PostgreSQL** (matches the thesis exactly) — SQLite remains the zero-config fallback if `DATABASE_URL` is unset | Started on SQLite for a zero-install first pass, then switched to an actual local PostgreSQL 18 instance once requested — see §9a for exactly how. Same SQLAlchemy models either way, no code changes needed to switch. |
+| Database | PostgreSQL | **Real PostgreSQL** (matches the thesis exactly) — SQLite remains the zero-config fallback if `DATABASE_URL` is unset | Started on SQLite for a zero-install first pass, then switched to an actual local PostgreSQL 18 instance once requested — see §10a for exactly how. Same SQLAlchemy models either way, no code changes needed to switch. |
 | GUS statistics | "GUS API" implied | **Seeded reference values** in `core/seed_data.py` | GUS's public BDL API doesn't expose the specific "organized vs. individual trips by destination country" breakdown the thesis describes at a queryable per-country level. Building a full scraper for a metric that isn't cleanly available wasn't worth the fragility; the numbers are illustrative and match the thesis's narrative (e.g. Egypt/Tunisia/Turkey skew organized, Czechia/Austria/Germany/Croatia skew individual). |
 | MSZ warnings | "RSS feed, 4-level scale" | **Live fetch attempted, with a documented fallback** | I could not find a stable, documented MSZ RSS feed with a machine-readable 1–4 level during implementation (see `core/etl.py` docstring). `MSZ_RSS_URL` is left as a `.env` setting: if you find/confirm the real feed URL, set it and the ETL will parse it (matching by country name in the entry title, defaulting matched entries to level 2 pending real level data). If unset, existing/seed data is kept rather than the app pretending to have live data it doesn't. |
 | Power BI | Embedded Power BI Service report via iframe | **A clickable "Open Power BI dashboard" link** (`POWERBI_REPORT_URL` in `.env`), not an iframe | See §6 for the full story — the university tenant blocks "Publish to web" (needs an admin), and true secure embedding needs an Azure app registration (real infra, out of scope). A direct link to the report works around both: opening it just requires being signed in to Power BI, which is fine for a personal thesis demo. |
@@ -136,7 +136,7 @@ Power BI workspace. It went through two revisions:
 1. **First pass (SQLite era)**: built from a one-time CSV export of
    `gus_tourism_stats`, uploaded via Power BI's "Upload a file" flow — a
    static snapshot with no ongoing connection to the app's database at all.
-2. **Second pass (after switching to Postgres, §9a)**: rebuilt as a genuine
+2. **Second pass (after switching to Postgres, §10a)**: rebuilt as a genuine
    **live connection**. Installed Power BI Desktop (via Microsoft Store —
    I can't drive its UI the way I could the browser-based Service, since
    it's a native app with no browser automation surface, so this leg was
@@ -217,7 +217,7 @@ for Italy, etc. — full list in `core/images.py`'s `LANDMARKS` dict).
   landmark's metadata on every Streamlit rerun (which happens on every
   widget interaction). Failures (offline, rate-limited, timeout) are *not*
   cached — only genuine successes are — so a transient failure doesn't lock
-  in a "no photo" result for 24 hours (see the bug log in §11).
+  in a "no photo" result for 24 hours (see the bug log in §12).
 - **Fallback**: if a photo can't be fetched, `render_photo()` in `app.py`
   shows a gradient placeholder with the destination's name instead of a
   broken image — used on the hero banner, recommendation cards, the
@@ -307,14 +307,14 @@ same recommendation system*, just given a smaller candidate list.
   of the requested flow, implemented as simply as the requirement allows
   ("do not make login mandatory... without unnecessarily complicating").
   See the evaluation of full user accounts below.
-- **User accounts: evaluated, not built**, per the request to assess
-  feasibility without forcing login onto the core features. The
-  session-only Favorites above work today, with no account. The About
-  tab's new "Konta użytkowników i zapisywanie wyników" section documents,
+- **User accounts: evaluated, not built** — at this point in the project —
+  per the request to assess feasibility without forcing login onto the core
+  features. The session-only Favorites above worked with no account. The
+  About tab's "Konta użytkowników i zapisywanie wyników" section documented,
   in-app, what real cross-visit accounts would need: a `users` table,
   secure password storage, and foreign-keying saved items to an account
-  — noting that the existing SQLAlchemy models already generalize to that
-  without restructuring, since nothing here was designed to preclude it.
+  — noting that the existing SQLAlchemy models already generalized to that
+  without restructuring. They were, in fact, then actually built — see §9.
 
 ### Bugs found and fixed while building this
 
@@ -374,7 +374,103 @@ same recommendation system*, just given a smaller candidate list.
   couple of false-start timeouts before the mocking was added — logged
   here since it looked like a regression at first and wasn't one).
 
-## 9. Setup & running
+## 9. User accounts (optional, persistent favorites)
+
+Built as a direct follow-up to §8's "evaluated, not built" note. Prompted by
+the user asking, unprompted by any prior plan, whether a user-friendly web
+app like this shouldn't have login/signup so users get their own experience
+— the recommendation was real accounts backed by a `users` table with
+favorites foreign-keyed to it, and the user approved building it. Accounts
+stay fully optional: every core feature (recommendations, comparison,
+exploring destinations) still works with zero account, per the original
+constraint never to make login mandatory — the only thing an account adds
+is having Favorites survive across visits/devices instead of vanishing the
+moment the browser session ends.
+
+**What was built:**
+
+- **`users` and `user_favorites` tables** (`core/db.py`, DDL added to
+  `schema.sql`), the latter cascade-deleted with its user and unique on
+  `(user_id, destination_id)`.
+- **`core/auth.py`** wraps `streamlit-authenticator` (bcrypt-hashed
+  passwords, a signed re-auth cookie) over a DB-backed credential store: the
+  `credentials` dict `Authenticate()` needs is rebuilt fresh from `users` on
+  *every* script run rather than kept in memory, since Streamlit reruns the
+  whole script on every interaction anyway — this is the library's own
+  documented pattern for a non-file credential store, not a workaround.
+  `sync_favorites_with_auth()` keeps the existing
+  `st.session_state["favorites"]` set (unchanged, still what every card/
+  strip reads) in step with login state: on the run a login is first
+  detected it's replaced with that user's DB-persisted favorites; on logout
+  it's cleared back to an empty anonymous session.
+- **Sidebar-first placement.** The login/register widgets render inside an
+  expander at the very top of the sidebar, above the criteria form —
+  visible on first load in every tab, since the sidebar persists across
+  tabs. (This wasn't the first placement — see the bug log below.) The
+  Konto tab, once logged in, shows a favorites grid + logout; logged out,
+  it just points at the sidebar rather than duplicating the form.
+
+### Bugs found and fixed while building this
+
+- **Wrong attribute path for reading back a just-registered user.** The
+  first version of `persist_new_user()` read the new user's hashed password
+  off `authenticator.authentication_controller.credentials`. Reproduced live
+  in the browser as an `AttributeError` the moment registration was
+  submitted: `'AuthenticationController' object has no attribute
+  'credentials'`. Fixed by reading the library's source
+  (`AuthenticationModel.__init__`) to find the real path — the credentials
+  dict lives one level deeper, on
+  `authentication_controller.authentication_model.credentials`.
+- **Registered accounts silently got the username as their display name
+  instead of their real name.** `persist_new_user()` read
+  `record.get("name")` off the freshly-registered credentials record and
+  fell back to the username when that key was missing — which it always
+  was: `streamlit-authenticator` stores a new registrant's name as separate
+  `first_name`/`last_name` keys, never a combined `name` key (confirmed by
+  reading `AuthenticationModel._get_user_name()` and
+  `AuthenticationController.register_user()`, whose actual return signature
+  is `(email, username, "first last")`). Caught by registering a real test
+  user end to end and checking the row that landed in Postgres directly —
+  the sidebar showed no error, so this would have shipped silently. Fixed
+  by taking the full name from `register_user()`'s own return value instead
+  of trying to read it back out of the credentials dict.
+- **Login/register UI not visible on the landing page — a direct user
+  report** ("i dont see login/signup on the landing page"). The first
+  version only put the login/register forms inside the Konto tab, requiring
+  an extra click to discover. Fixed by moving them to the always-visible
+  sidebar expander described above; verified visually via a fresh page load
+  screenshot showing both forms rendered without any tab click.
+- **A stale re-auth cookie crashed the entire app for that browser.**
+  Surfaced by the user pasting a screenshot of an uncaught
+  `streamlit_authenticator.utilities.exceptions.LoginError: User not
+  authorized` traceback. Root cause, confirmed by reading
+  `AuthenticationModel.login()`: the unattended
+  `authenticator.login(location="unrendered")` bootstrap call (run on every
+  script run, before any tab renders, to silently honor an existing re-auth
+  cookie) *raises* rather than just treating the cookie as invalid when the
+  cookie's username has no matching row in the credentials dict rebuilt
+  from `users` — which happens any time an account is deleted (here, a test
+  user cleaned up manually after end-to-end verification) while that
+  browser still holds a valid cookie for it. Fixed by wrapping the
+  bootstrap call in `try/except LoginError`, deleting the stale cookie via
+  `authenticator.cookie_controller.delete_cookie()` and falling back to an
+  anonymous session, instead of crashing every rerun until the cookie
+  expires or is cleared by hand.
+- Full end-to-end verification performed live in the browser after these
+  fixes (not just the test suite): registered a fresh user via the sidebar
+  → correct name confirmed in the `users` row via direct DB query →
+  logged in → toggled a Favorite → confirmed it landed in `user_favorites`
+  → logged out and back in → confirmed the Favorite was still marked saved
+  (i.e. genuinely reloaded from the DB, not just left over in session
+  state) → test user and its favorite deleted afterward, no leftover data.
+  `tests/test_auth.py` (7 tests: round-trip, idempotency, per-user scoping,
+  unknown-user handling for the DB helper functions) and two updated
+  `test_app_integration.py` assertions (the sidebar's new widgets shifted
+  the submit button's position, so it was given an explicit
+  `key="find_destinations_btn"` and the affected tests switched from
+  positional to keyed lookup) — full suite (32 tests) green after each fix.
+
+## 10. Setup & running
 
 ```powershell
 cd tourism-recommender
@@ -387,7 +483,7 @@ copy .env.example .env      # then edit ADMIN_PASSWORD at minimum
 First run auto-creates and seeds the database (SQLite at `data/app.db` by
 default) — no manual migration step needed for the default setup.
 
-### 9a. Switching to PostgreSQL (what this project actually runs on)
+### 10a. Switching to PostgreSQL (what this project actually runs on)
 
 This app currently runs against a real local PostgreSQL 18 instance, not
 SQLite. To set that up from scratch:
@@ -444,7 +540,7 @@ loop) to match the thesis's "harmonogram zadań" design:
 schtasks /create /tn "TourismAppETL" /tr "C:\path\to\.venv\Scripts\python.exe C:\path\to\scheduler.py" /sc daily /st 06:00
 ```
 
-## 10. Testing
+## 11. Testing
 
 ```powershell
 .\.venv\Scripts\pytest -v
@@ -462,7 +558,7 @@ schtasks /create /tn "TourismAppETL" /tr "C:\path\to\.venv\Scripts\python.exe C:
   Streamlit's `AppTest` harness, asserts it renders without exceptions, that
   the language switch actually changes rendered text, and all 5 tabs render.
 
-## 11. Verification performed during development
+## 12. Verification performed during development
 
 Beyond the automated suite, the running app was manually exercised end to
 end in a real Chrome browser session against a fresh SQLite database:
@@ -614,7 +710,7 @@ silently failed to render, a dialog that closed itself on its own
 internal interactions, and a `StreamlitWidgetAlreadyInstantiatedError`
 crash from the Explore→sidebar "add to compare" action.
 
-## 12. Known limitations
+## 13. Known limitations
 
 - GUS figures (`organized_share_pct`/`individual_share_pct`) are seeded
   reference values, not a live feed (see §3b) — no longer shown in the
@@ -645,9 +741,10 @@ crash from the Explore→sidebar "add to compare" action.
   affect the match score — there's no per-person/per-group cost data in
   this app (see §3a) to scale by. It's collected for context and future
   extensibility, not silently ignored without explanation.
-- Favorites are session-only (`st.session_state`), not persisted to the
-  database or tied to any account — closing the browser loses them. See
-  §8's "user accounts" note for what real persistence would need.
+- Favorites persist across visits only for a logged-in account (§9); an
+  anonymous session's Favorites still live in `st.session_state` only and
+  are lost when the browser session ends. This is by design, not a gap —
+  accounts stay opt-in rather than mandatory.
 - The destination detail dialog deliberately does not cover climate,
   entry requirements, or transport/accessibility — no verified data
   source for these was integrated, and the dialog says so explicitly
