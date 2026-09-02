@@ -208,25 +208,48 @@ with st.sidebar:
             name=st.session_state.get("name", ""), username=st.session_state.get("username", "")))
         authenticator.logout(t("account_logout"), location="sidebar", key="sidebar_logout_btn")
     else:
-        with st.expander(f"👤 {t('account_sidebar_prompt')}"):
-            sidebar_login_tab, sidebar_register_tab = st.tabs(
-                [t("account_login_tab"), t("account_register_tab")])
-            with sidebar_login_tab:
-                authenticator.login(location="sidebar", key="sidebar_login_form",
+        st.session_state.setdefault("auth_mode", "login")
+        with st.expander(f"👤 {t('account_sidebar_prompt')}", expanded=True):
+            # location="main" here (not "sidebar") is deliberate:
+            # streamlit-authenticator's location="sidebar" calls st.sidebar.form()
+            # internally, which targets the sidebar's top-level container directly
+            # and ignores any *nested* container it's called from -- so with
+            # location="sidebar", the login and register forms rendered
+            # unconditionally, always both, regardless of being nested in this
+            # expander or in tabs (confirmed by reading the library source after
+            # a user report that the two forms weren't behaving like tabs at
+            # all). Bare st.form() (location="main") respects the ambient `with`
+            # container instead, so nesting one-at-a-time inside this expander
+            # actually works.
+            if st.session_state.pop("just_registered", False):
+                st.success(t("account_register_success"))
+
+            if st.session_state["auth_mode"] == "login":
+                authenticator.login(location="main", key="sidebar_login_form",
                                      fields=login_fields(st.session_state["lang"]))
                 if st.session_state.get("authentication_status") is False:
                     st.error(t("account_login_error"))
-            with sidebar_register_tab:
+                if st.button(t("account_switch_to_register"), key="switch_to_register_btn",
+                             use_container_width=True):
+                    st.session_state["auth_mode"] = "register"
+                    st.rerun()
+            else:
                 try:
                     _, _sidebar_new_username, _sidebar_new_name = authenticator.register_user(
-                        location="sidebar", captcha=False, password_hint=False,
+                        location="main", captcha=False, password_hint=False,
                         key="sidebar_register_form", fields=register_fields(st.session_state["lang"]),
                     )
                     if _sidebar_new_username:
                         persist_new_user(session, authenticator, _sidebar_new_username, _sidebar_new_name)
-                        st.success(t("account_register_success"))
+                        st.session_state["auth_mode"] = "login"
+                        st.session_state["just_registered"] = True
+                        st.rerun()
                 except Exception as exc:
                     st.error(t("account_register_error").format(error=str(exc)))
+                if st.button(t("account_switch_to_login"), key="switch_to_login_btn",
+                             use_container_width=True):
+                    st.session_state["auth_mode"] = "login"
+                    st.rerun()
     st.divider()
 
     st.markdown(f'<div class="pref-card-header">🧭 {t("form_header")}</div>', unsafe_allow_html=True)

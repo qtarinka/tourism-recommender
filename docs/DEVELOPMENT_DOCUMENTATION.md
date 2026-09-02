@@ -456,19 +456,53 @@ moment the browser session ends.
   `authenticator.cookie_controller.delete_cookie()` and falling back to an
   anonymous session, instead of crashing every rerun until the cookie
   expires or is cleared by hand.
-- Full end-to-end verification performed live in the browser after these
-  fixes (not just the test suite): registered a fresh user via the sidebar
-  → correct name confirmed in the `users` row via direct DB query →
-  logged in → toggled a Favorite → confirmed it landed in `user_favorites`
-  → logged out and back in → confirmed the Favorite was still marked saved
-  (i.e. genuinely reloaded from the DB, not just left over in session
-  state) → test user and its favorite deleted afterward, no leftover data.
+- **Login and register forms both always visible, with no real tab
+  switching — a direct user report** ("i dont like the functionality...
+  i dont think they should be both there"), backed by a screenshot showing
+  both fully filled-out forms stacked in the sidebar simultaneously. The
+  original implementation nested `authenticator.login(location="sidebar",
+  ...)` and `authenticator.register_user(location="sidebar", ...)` inside
+  `st.tabs([...])`, expecting Streamlit's tab container to show only the
+  active one. Root cause, found by reading the library source
+  (`authentication_view.py`): `location="sidebar"` makes every one of these
+  widgets call `st.sidebar.form(...)` — the sidebar's *top-level* container
+  — directly, rather than `st.form()`. `st.sidebar.xxx()` always targets
+  that top-level container regardless of which `with` block it's called
+  from, so nesting it inside tabs (or the expander before that) was
+  cosmetic; both forms rendered unconditionally every run, in script order,
+  completely ignoring the tabs. Fixed by switching both calls to
+  `location="main"` (which uses bare `st.form()`, and bare `st.form()` does
+  respect the ambient container it's called from) while keeping the actual
+  call sites nested inside `with st.sidebar: with st.expander(...):` —  and
+  replacing the tabs with an explicit `st.session_state["auth_mode"]`
+  toggle ("login" / "register") plus a plain switch-mode button, so exactly
+  one form renders at a time. Successful registration now also switches
+  `auth_mode` back to `"login"` and reruns with a one-shot success banner
+  ("Account created! Log in below...") instead of leaving the register form
+  sitting there with no indication of what to do next — closing the loop
+  the user asked for: register → land on login; log in → land on full
+  access (the existing collapse into the "Zalogowano jako..." success state
+  already did this part). `test_tabs_render_recommendation_comparison_
+  info_about_admin` updated: 8 tabs → 6, since the two nested login/register
+  tabs it was counting no longer exist.
+- Full end-to-end verification performed live in the browser after all of
+  the fixes above (not just the test suite), across two passes: registered
+  a fresh user via the sidebar → correct name confirmed in the `users` row
+  via direct DB query → logged in → toggled a Favorite → confirmed it
+  landed in `user_favorites` → logged out and back in → confirmed the
+  Favorite was still marked saved (i.e. genuinely reloaded from the DB, not
+  just left over in session state); then, after the tab-switching fix,
+  re-verified the actual UX end to end — landing page shows only the login
+  form, "Don't have an account?" switches to a standalone register form,
+  submitting it lands back on login with the success banner, and logging
+  in collapses straight to the full-access "Zalogowano jako..." state. Test
+  users and their favorites deleted afterward each time, no leftover data.
   `tests/test_auth.py` (7 tests: round-trip, idempotency, per-user scoping,
-  unknown-user handling for the DB helper functions) and two updated
+  unknown-user handling for the DB helper functions) and updated
   `test_app_integration.py` assertions (the sidebar's new widgets shifted
   the submit button's position, so it was given an explicit
-  `key="find_destinations_btn"` and the affected tests switched from
-  positional to keyed lookup) — full suite (32 tests) green after each fix.
+  `key="find_destinations_btn"`, and the tab count assertion was corrected
+  as described above) — full suite (32 tests) green after each fix.
 
 ## 10. Setup & running
 

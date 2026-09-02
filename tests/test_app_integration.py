@@ -72,11 +72,13 @@ def test_tabs_render_recommendation_comparison_info_about_admin():
     at = AppTest.from_file(APP_PATH)
     at.run(timeout=30)
     assert not at.exception
-    # 6 top-level tabs (Results, Explore, Contextual data, Account, About,
-    # Admin) + 2 more nested inside Account (Log in / Register, only shown
-    # when logged out) -- AppTest's `.tabs` flattens the whole app, not
-    # just the top level.
-    assert len(at.tabs) == 8
+    # 6 top-level tabs: Results, Explore, Contextual data, Account, About,
+    # Admin. The sidebar's login/register widget toggles between the two
+    # forms with a plain button rather than nested st.tabs (see app.py's
+    # comment on why -- streamlit-authenticator's location="sidebar" bypasses
+    # nested containers, so real st.tabs() there rendered both forms
+    # unconditionally), so there's nothing left to flatten in from there.
+    assert len(at.tabs) == 6
 
 
 def test_unified_form_recommendation_mode_ranks_all_destinations():
