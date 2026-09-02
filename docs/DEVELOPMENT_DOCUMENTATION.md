@@ -374,18 +374,25 @@ same recommendation system*, just given a smaller candidate list.
   couple of false-start timeouts before the mocking was added — logged
   here since it looked like a regression at first and wasn't one).
 
-## 9. User accounts (optional, persistent favorites)
+## 9. User accounts, mandatory login, and profile management
+
+*Note: this section covers two passes with a genuine reversal between them
+-- accounts started opt-in, then a later, stricter requirement made login
+mandatory app-wide. Both are kept below (rather than silently rewriting
+history) since the reasoning behind each was sound at the time it was
+given; see "Mandatory login" further down for exactly what changed and
+why.*
 
 Built as a direct follow-up to §8's "evaluated, not built" note. Prompted by
 the user asking, unprompted by any prior plan, whether a user-friendly web
 app like this shouldn't have login/signup so users get their own experience
 — the recommendation was real accounts backed by a `users` table with
-favorites foreign-keyed to it, and the user approved building it. Accounts
-stay fully optional: every core feature (recommendations, comparison,
-exploring destinations) still works with zero account, per the original
-constraint never to make login mandatory — the only thing an account adds
-is having Favorites survive across visits/devices instead of vanishing the
-moment the browser session ends.
+favorites foreign-keyed to it, and the user approved building it. At this
+stage, accounts were fully optional: every core feature (recommendations,
+comparison, exploring destinations) still worked with zero account, per the
+original constraint never to make login mandatory — the only thing an
+account added was having Favorites survive across visits/devices instead of
+vanishing the moment the browser session ended.
 
 **What was built:**
 
@@ -503,6 +510,104 @@ moment the browser session ends.
   the submit button's position, so it was given an explicit
   `key="find_destinations_btn"`, and the tab count assertion was corrected
   as described above) — full suite (32 tests) green after each fix.
+
+### Mandatory login, full-app gating, and profile management
+
+A direct, explicit reversal of the "never make login mandatory" constraint
+from earlier in this section: the user asked for an account to be required
+to use the app at all -- "you should only be able to access travel criteria
+upon successful login the rest of the app can show stuff but cant be used
+or clicked without a successful login" -- plus a way to view and edit that
+account (name, email, password) from a profile control. This supersedes,
+rather than extends, the opt-in design above.
+
+**What changed:**
+
+- **The sidebar criteria form only renders once authenticated.** Previously
+  it was always present; now the entire `st.slider`/`st.number_input`/
+  `st.multiselect`/submit-button block moved inside
+  `if st.session_state.get("authentication_status"):`, with the
+  login/register expander as the *only* sidebar content otherwise, plus an
+  info line pointing at it. `trip_length_days`, `travel_month`,
+  `risk_tolerance`, and `chosen_names` get harmless fallback values
+  (`None`/`[]`) in the logged-out branch purely so the module doesn't hit a
+  `NameError` -- they're never actually read in that state, since every
+  place that reads them is itself behind the same gate (below).
+- **`_require_login()`** (`app.py`) is a one-line gate — shows a shared
+  locked-feature message and returns `False` when logged out — wrapped
+  around the body of every tab except About: Results, Explore, Contextual
+  data, Account, and Admin all show only that message, with no interactive
+  widgets underneath, when not authenticated. About stays open, since it's
+  informational only (no clicks to disable) and explains the account
+  requirement to a visitor who hasn't logged in yet.
+- **A "👤 Profile" button above the hero banner**, right-aligned via
+  `st.columns([6, 1])`, visible only when logged in — the closest
+  equivalent to a "top right" nav control Streamlit's layout system offers;
+  the browser-chrome top-right corner itself is reserved for Streamlit's
+  own Deploy/menu UI and isn't available to app code. Clicking it opens a
+  profile dialog (`_profile_dialog()`) via the same persistent-session-state
+  + dispatcher pattern as the destination detail dialog (`open_profile()`/
+  `_close_profile()`/`on_dismiss`), for the same reason: the dialog's own
+  internal form submissions each trigger their own rerun, which would
+  otherwise close a dialog only kept open by an `if st.button(...):` guard.
+- **Profile editing** is a single combined form (full name + email) that
+  writes straight to the `users` row via a new `core.auth.update_profile()`
+  — deliberately *not* going through streamlit-authenticator's own
+  `update_user_details()` widget, which only updates one field at a time
+  via a dropdown and would have meant two separate forms for what's
+  conceptually one save action. Saving also updates
+  `st.session_state["name"]`/`["email"]` and calls `st.rerun()` immediately
+  (see the bug below) so the sidebar's "Zalogowano jako" banner reflects
+  the change on the same click, not one interaction later.
+- **Password changes** use streamlit-authenticator's own
+  `reset_password()` widget (verifies the current password, validates the
+  new one against its built-in complexity regex, hashes it) rather than a
+  custom implementation — correct password verification and hashing is not
+  something worth re-deriving. Same read-the-hash-back-and-persist-to-DB
+  pattern as registration: `core.auth.persist_password_change()` mirrors
+  `persist_new_user()` exactly, since `reset_password()` only updates the
+  in-memory credentials dict, which is rebuilt fresh from `users` (and the
+  old hash) on every subsequent rerun otherwise.
+- **`about_accounts_text`** (PL/EN) rewritten to describe the app as
+  requiring an account, replacing the now-false "entirely optional" framing
+  from the section above.
+
+**Bugs found and fixed while building this:**
+
+- **Location bypass bug, generalized.** The exact same
+  `location="sidebar"`/`location="main"` lesson from the login/register fix
+  earlier in this section applied again to `reset_password()` inside the
+  profile dialog: it isn't in the sidebar at all, so `location="main"` was
+  used there too, on the same reasoning (bare `st.form()` respects the
+  container it's actually called from; `st.sidebar.form()` never does).
+  Caught by re-reading the same library source before writing the code,
+  rather than by reproducing the bug live a second time.
+- **Profile name change lagged one interaction behind the sidebar
+  banner.** Saving a new name updated `st.session_state["name"]` and showed
+  `st.success(...)`, but the sidebar's "Zalogowano jako" banner — which
+  renders earlier in the script than the profile dialog — had already used
+  the *old* value by the time that assignment ran, on that same rerun.
+  Reproduced live: after saving, the dialog showed the success message but
+  the sidebar still showed the old name until the next unrelated
+  interaction. Fixed with the same one-shot-flag-plus-`st.rerun()` pattern
+  already used for "just registered" in the login widget: set
+  `profile_just_saved`, rerun immediately (re-opening the dialog via the
+  persistent `show_profile` state), and show the success message on that
+  next run instead of the one that's about to be thrown away.
+- Full end-to-end verification performed live in the browser: logged out
+  and confirmed the sidebar has zero criteria-form widgets and every gated
+  tab shows only the locked message; registered a fresh account and logged
+  in, confirming the Profile button appears and the criteria form renders;
+  opened the profile dialog and changed both the display name and the
+  password; verified directly against Postgres afterward that the `users`
+  row's `name` matched the new value and `password_hash` verified
+  (bcrypt) against the *new* password but no longer against the old one.
+  Test account and its data deleted afterward. `tests/test_app_integration.py`
+  gained `_login()` (pre-seeds `AppTest`'s session_state as already
+  authenticated, bypassing the real login form and avoiding any real-DB
+  writes in the test run) plus four new tests covering the logged-out
+  sidebar, the logged-out locked tabs, the logged-in Profile button, and
+  About's unrestricted access — full suite (36 tests) green.
 
 ## 10. Setup & running
 
@@ -775,10 +880,11 @@ crash from the Explore→sidebar "add to compare" action.
   affect the match score — there's no per-person/per-group cost data in
   this app (see §3a) to scale by. It's collected for context and future
   extensibility, not silently ignored without explanation.
-- Favorites persist across visits only for a logged-in account (§9); an
-  anonymous session's Favorites still live in `st.session_state` only and
-  are lost when the browser session ends. This is by design, not a gap —
-  accounts stay opt-in rather than mandatory.
+- An account is required to use any part of the app (§9) — there is no
+  anonymous mode. This is by design per the current requirement, not a gap,
+  but it's a reversal of this project's earlier explicit "never make login
+  mandatory" constraint; see §9's "Mandatory login" subsection for exactly
+  what changed and why.
 - The destination detail dialog deliberately does not cover climate,
   entry requirements, or transport/accessibility — no verified data
   source for these was integrated, and the dialog says so explicitly

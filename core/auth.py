@@ -113,6 +113,55 @@ def persist_new_user(session, authenticator: stauth.Authenticate, username: str,
     session.commit()
 
 
+RESET_PASSWORD_FIELDS = {
+    "pl": {
+        "Form name": "Zmień hasło", "Current password": "Obecne hasło",
+        "New password": "Nowe hasło", "Repeat password": "Powtórz nowe hasło",
+        "Reset": "Zmień hasło",
+    },
+    "en": {
+        "Form name": "Change password", "Current password": "Current password",
+        "New password": "New password", "Repeat password": "Repeat new password",
+        "Reset": "Change password",
+    },
+}
+
+
+def reset_password_fields(lang: str) -> dict:
+    return RESET_PASSWORD_FIELDS.get(lang, RESET_PASSWORD_FIELDS["en"])
+
+
+def update_profile(session, username: str, name: str, email: str):
+    """Directly updates the `users` row's name/email -- unlike password
+    changes, these aren't security-sensitive credentials, so this bypasses
+    streamlit-authenticator's own update_user_details() widget (which only
+    updates one field at a time via a dropdown) in favor of a single
+    combined form in app.py's profile dialog. Caller is responsible for
+    also updating st.session_state["name"]/["email"] afterward so the
+    already-rendered "Zalogowano jako" banner reflects the change without
+    needing a fresh login."""
+    user = session.query(User).filter_by(username=username).first()
+    if user is None:
+        return
+    user.name = name
+    user.email = email or None
+    session.commit()
+
+
+def persist_password_change(session, authenticator: stauth.Authenticate, username: str):
+    """Call right after a successful authenticator.reset_password() --
+    same read-back-and-write pattern as persist_new_user(), for the same
+    reason: reset_password() only updates the in-memory credentials dict
+    (rebuilt fresh from `users` every rerun, see get_authenticator), and
+    never touches the DB itself."""
+    record = authenticator.authentication_controller.authentication_model.credentials["usernames"][username]
+    user = session.query(User).filter_by(username=username).first()
+    if user is None:
+        return
+    user.password_hash = record["password"]
+    session.commit()
+
+
 def get_user_id(session, username: str):
     user = session.query(User).filter_by(username=username).first()
     return user.user_id if user else None

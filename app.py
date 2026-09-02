@@ -30,6 +30,7 @@ from core.theme import CUSTOM_CSS
 from core.auth import (
     get_authenticator, persist_new_user, sync_favorites_with_auth,
     add_db_favorite, remove_db_favorite, login_fields, register_fields,
+    update_profile, persist_password_change, reset_password_fields,
 )
 
 st.set_page_config(page_title="Tourism Decision Support", page_icon="\U0001F30D", layout="wide")
@@ -186,6 +187,33 @@ def _close_detail():
     st.session_state["open_detail_scored"] = None
 
 
+def open_profile():
+    """Same persistent-state-plus-rerun pattern as open_detail() above, for
+    the same reason: the profile dialog's own internal interactions (saving
+    the name/email form, submitting the password-change form) each trigger
+    their own st.rerun(), which would immediately close a dialog that was
+    only open because of an `if st.button(...):` guard around the trigger."""
+    st.session_state["show_profile"] = True
+    st.rerun()
+
+
+def _close_profile():
+    st.session_state["show_profile"] = False
+
+
+def _require_login() -> bool:
+    """Gate for every tab body except About: the app now requires a logged-in
+    account to be used at all (not just to persist Favorites across visits,
+    the original opt-in design -- see docs/DEVELOPMENT_DOCUMENTATION.md §9
+    vs. the later, stricter requirement this replaces it with). Shows a
+    locked message and returns False when not authenticated, so callers can
+    write `with tab_x: if _require_login(): <real content>`."""
+    if not st.session_state.get("authentication_status"):
+        st.info(t("locked_feature_message"))
+        return False
+    return True
+
+
 # --- sidebar: ONE unified travel-criteria form --------------------------
 # Mode (recommendation vs comparison) is derived from whether the
 # "destinations to consider" multiselect is empty -- there is no separate
@@ -202,11 +230,50 @@ with st.sidebar:
     # Account status/login -- placed at the very top of the sidebar (the
     # first thing rendered on load, in every tab) rather than tucked
     # inside the "Konto" tab alone, so it's actually visible without
-    # having to go looking for it.
+    # having to go looking for it. The app now requires a logged-in account
+    # to be used at all: the travel-criteria form below (and every other
+    # feature) only renders once authenticated -- while logged out, this
+    # login/register widget is the *only* thing in the sidebar.
     if st.session_state.get("authentication_status"):
         st.success(t("account_logged_in_as").format(
             name=st.session_state.get("name", ""), username=st.session_state.get("username", "")))
         authenticator.logout(t("account_logout"), location="sidebar", key="sidebar_logout_btn")
+        st.divider()
+
+        st.markdown(f'<div class="pref-card-header">🧭 {t("form_header")}</div>', unsafe_allow_html=True)
+        st.caption(t("form_intro"))
+
+        trip_length_days = st.slider(f"📅 {t('form_trip_length')}", min_value=2, max_value=21, value=7)
+        travellers = st.number_input(f"👥 {t('form_travellers')}", min_value=1, max_value=10, value=2, step=1)
+        st.session_state["current_travellers"] = travellers
+        travel_month = st.selectbox(
+            f"🗓️ {t('form_travel_month')}", options=list(range(1, 13)),
+            format_func=month_name, index=6,
+        )
+        st.markdown(f"**🧳 {t('form_org_style')}**")
+        org_style = st.segmented_control(
+            t("form_org_style"), options=["organized", "individual"],
+            format_func=lambda v: t("form_org_organized") if v == "organized" else t("form_org_individual"),
+            default="organized", label_visibility="collapsed",
+        ) or "organized"
+        st.markdown(f"**⚠️ {t('form_risk')}**")
+        risk_tolerance = st.segmented_control(
+            t("form_risk"), options=["low", "medium", "high"],
+            format_func=lambda v: {"low": t("form_risk_low"), "medium": t("form_risk_medium"),
+                                    "high": t("form_risk_high")}[v],
+            default="medium", label_visibility="collapsed",
+        ) or "medium"
+
+        _dest_name_options = sorted(destination_name(d) for d in all_destinations)
+        chosen_names = st.multiselect(
+            f"🗺️ {t('form_destinations')}", options=_dest_name_options, key="destinations_multiselect",
+        )
+        st.caption(t("form_destinations_help"))
+
+        submitted = st.button(f"🔎 {t('form_submit')}", type="primary", use_container_width=True,
+                               key="find_destinations_btn")
+        if submitted:
+            st.session_state["search_done"] = True
     else:
         st.session_state.setdefault("auth_mode", "login")
         with st.expander(f"👤 {t('account_sidebar_prompt')}", expanded=True):
@@ -250,42 +317,27 @@ with st.sidebar:
                              use_container_width=True):
                     st.session_state["auth_mode"] = "login"
                     st.rerun()
-    st.divider()
+        st.divider()
+        st.info(t("sidebar_login_required"))
 
-    st.markdown(f'<div class="pref-card-header">🧭 {t("form_header")}</div>', unsafe_allow_html=True)
-    st.caption(t("form_intro"))
+# Fallbacks so the rest of the script has something to reference when
+# logged out -- the values are never actually used for scoring, since
+# tab_results (the only place that reads them) is itself gated by
+# _require_login() and short-circuits before reaching this branch's data.
+if not st.session_state.get("authentication_status"):
+    trip_length_days = travel_month = risk_tolerance = None
+    chosen_names = []
 
-    trip_length_days = st.slider(f"📅 {t('form_trip_length')}", min_value=2, max_value=21, value=7)
-    travellers = st.number_input(f"👥 {t('form_travellers')}", min_value=1, max_value=10, value=2, step=1)
-    st.session_state["current_travellers"] = travellers
-    travel_month = st.selectbox(
-        f"🗓️ {t('form_travel_month')}", options=list(range(1, 13)),
-        format_func=month_name, index=6,
-    )
-    st.markdown(f"**🧳 {t('form_org_style')}**")
-    org_style = st.segmented_control(
-        t("form_org_style"), options=["organized", "individual"],
-        format_func=lambda v: t("form_org_organized") if v == "organized" else t("form_org_individual"),
-        default="organized", label_visibility="collapsed",
-    ) or "organized"
-    st.markdown(f"**⚠️ {t('form_risk')}**")
-    risk_tolerance = st.segmented_control(
-        t("form_risk"), options=["low", "medium", "high"],
-        format_func=lambda v: {"low": t("form_risk_low"), "medium": t("form_risk_medium"),
-                                "high": t("form_risk_high")}[v],
-        default="medium", label_visibility="collapsed",
-    ) or "medium"
-
-    _dest_name_options = sorted(destination_name(d) for d in all_destinations)
-    chosen_names = st.multiselect(
-        f"🗺️ {t('form_destinations')}", options=_dest_name_options, key="destinations_multiselect",
-    )
-    st.caption(t("form_destinations_help"))
-
-    submitted = st.button(f"🔎 {t('form_submit')}", type="primary", use_container_width=True,
-                           key="find_destinations_btn")
-    if submitted:
-        st.session_state["search_done"] = True
+# Profile button, right-aligned above the hero banner -- the closest
+# equivalent Streamlit layout offers to a "top right" nav element (the
+# actual browser-chrome top-right corner is reserved for Streamlit's own
+# Deploy/menu controls and isn't available to app code). Only shown once
+# logged in, since there's no profile to view/edit otherwise.
+if st.session_state.get("authentication_status"):
+    _, _profile_btn_col = st.columns([6, 1])
+    with _profile_btn_col:
+        if st.button(f"👤 {t('nav_profile')}", key="open_profile_btn", use_container_width=True):
+            open_profile()
 
 render_hero()
 
@@ -409,6 +461,52 @@ if st.session_state.get("open_detail_id") is not None:
     _detail_dialog(st.session_state["open_detail_id"], st.session_state.get("open_detail_scored"))
 
 
+@st.dialog(t("profile_dialog_title"), on_dismiss=_close_profile)
+def _profile_dialog():
+    username = st.session_state.get("username")
+    st.caption(f"@{username}")
+
+    if st.session_state.pop("profile_just_saved", False):
+        st.success(t("profile_saved"))
+
+    with st.form("profile_edit_form"):
+        new_name = st.text_input(t("profile_name_label"), value=st.session_state.get("name", ""))
+        new_email = st.text_input(t("profile_email_label"), value=st.session_state.get("email", ""))
+        if st.form_submit_button(t("profile_save_btn"), type="primary", use_container_width=True):
+            update_profile(session, username, new_name.strip(), new_email.strip())
+            # st.session_state["name"] is also read by the sidebar's
+            # "Zalogowano jako" banner, which renders *before* this dialog
+            # in script order -- updating it here takes effect only on the
+            # *next* rerun, not the one this form_submit_button triggers.
+            # Rerunning immediately (with a one-shot flag for the success
+            # message, since a plain st.success() here would be wiped out
+            # by the rerun before ever being seen) makes the sidebar catch
+            # up on the very same click instead of lagging one interaction
+            # behind.
+            st.session_state["name"] = new_name.strip()
+            st.session_state["email"] = new_email.strip()
+            st.session_state["profile_just_saved"] = True
+            st.rerun()
+
+    st.divider()
+    # location="main" (not "sidebar") for the same reason as the sidebar's
+    # login/register widgets -- this dialog isn't the sidebar at all, but
+    # the lesson generalizes: location="sidebar" always targets the
+    # sidebar's own top-level container regardless of where it's called
+    # from, so it would render this form in the sidebar instead of here.
+    try:
+        if authenticator.reset_password(username, location="main", key="profile_reset_pw_form",
+                                         fields=reset_password_fields(st.session_state["lang"])):
+            persist_password_change(session, authenticator, username)
+            st.success(t("profile_password_changed"))
+    except Exception as exc:
+        st.error(t("profile_password_error").format(error=str(exc)))
+
+
+if st.session_state.get("show_profile"):
+    _profile_dialog()
+
+
 def render_favorites_strip():
     favorites = st.session_state["favorites"]
     if not favorites:
@@ -461,94 +559,94 @@ def render_result_card(scored, mode: str):
 
 # --- Results tab: recommendation OR comparison, same rendering ----------
 with tab_results:
-    render_favorites_strip()
+    if _require_login():
+        render_favorites_strip()
 
-    if not st.session_state["search_done"]:
-        st.info(t("results_empty"))
-    else:
-        mode = "comparison" if chosen_names else "recommendation"
-        if mode == "comparison":
-            name_to_dest = {destination_name(d): d for d in all_destinations}
-            candidates = [name_to_dest[n] for n in chosen_names if n in name_to_dest]
+        if not st.session_state["search_done"]:
+            st.info(t("results_empty"))
         else:
-            candidates = all_destinations
+            mode = "comparison" if chosen_names else "recommendation"
+            if mode == "comparison":
+                name_to_dest = {destination_name(d): d for d in all_destinations}
+                candidates = [name_to_dest[n] for n in chosen_names if n in name_to_dest]
+            else:
+                candidates = all_destinations
 
-        ranked = rank_destinations(candidates, trip_length_days, travel_month, risk_tolerance)
+            ranked = rank_destinations(candidates, trip_length_days, travel_month, risk_tolerance)
 
-        header_key = "results_header_comparison" if mode == "comparison" else "results_header_recommendation"
-        caption_key = "results_mode_caption_comparison" if mode == "comparison" else "results_mode_caption_recommendation"
-        st.subheader(t(header_key))
-        st.caption(t(caption_key))
+            header_key = "results_header_comparison" if mode == "comparison" else "results_header_recommendation"
+            caption_key = "results_mode_caption_comparison" if mode == "comparison" else "results_mode_caption_recommendation"
+            st.subheader(t(header_key))
+            st.caption(t(caption_key))
 
-        if not ranked:
-            st.warning(t("results_no_selected_destinations"))
-        else:
-            for scored in ranked:
-                render_result_card(scored, mode)
+            if not ranked:
+                st.warning(t("results_no_selected_destinations"))
+            else:
+                for scored in ranked:
+                    render_result_card(scored, mode)
 
 # --- Explore destinations: search/filter + click-through detail dialog --
 with tab_explore:
-    st.subheader(t("gallery_header"))
-    st.caption(t("gallery_intro"))
+    if _require_login():
+        st.subheader(t("gallery_header"))
+        st.caption(t("gallery_intro"))
 
-    col_search, col_region = st.columns([3, 1])
-    with col_search:
-        search_query = st.text_input(
-            t("explore_search_placeholder"), key="explore_search",
-            label_visibility="collapsed", placeholder=t("explore_search_placeholder"),
-        )
-    with col_region:
-        region_filter = st.segmented_control(
-            "region", options=["all", "europe", "non_europe"],
-            format_func=lambda v: {"all": t("explore_region_all"), "europe": t("explore_region_europe"),
-                                    "non_europe": t("explore_region_non_europe")}[v],
-            default="all", key="explore_region", label_visibility="collapsed",
-        ) or "all"
+        col_search, col_region = st.columns([3, 1])
+        with col_search:
+            search_query = st.text_input(
+                t("explore_search_placeholder"), key="explore_search",
+                label_visibility="collapsed", placeholder=t("explore_search_placeholder"),
+            )
+        with col_region:
+            region_filter = st.segmented_control(
+                "region", options=["all", "europe", "non_europe"],
+                format_func=lambda v: {"all": t("explore_region_all"), "europe": t("explore_region_europe"),
+                                        "non_europe": t("explore_region_non_europe")}[v],
+                default="all", key="explore_region", label_visibility="collapsed",
+            ) or "all"
 
-    filtered = [d for d in all_destinations if region_filter == "all" or d.region == region_filter]
-    if search_query.strip():
-        q = search_query.strip().lower()
-        filtered = [d for d in filtered if q in d.name_en.lower() or q in d.name_pl.lower()]
-    filtered = sorted(filtered, key=destination_name)
+        filtered = [d for d in all_destinations if region_filter == "all" or d.region == region_filter]
+        if search_query.strip():
+            q = search_query.strip().lower()
+            filtered = [d for d in filtered if q in d.name_en.lower() or q in d.name_pl.lower()]
+        filtered = sorted(filtered, key=destination_name)
 
-    if not filtered:
-        st.info(t("explore_no_results"))
-    else:
-        explore_cols = st.columns(4)
-        for idx, dest in enumerate(filtered):
-            with explore_cols[idx % 4]:
-                st.markdown(f'<div class="gallery-caption">{destination_name(dest)}</div>', unsafe_allow_html=True)
-                render_photo(dest, height_px=120)
-                if st.button(t("explore_open"), key=f"explore_open_{dest.destination_id}",
-                             use_container_width=True):
-                    open_detail(dest.destination_id, None)
-                if st.button(t("explore_add_to_compare"), key=f"explore_add_{dest.destination_id}",
-                             use_container_width=True):
-                    name = destination_name(dest)
-                    st.session_state["pending_add_to_compare"] = name
-                    st.toast(t("explore_added_to_compare").format(name=name))
-                    st.rerun()
+        if not filtered:
+            st.info(t("explore_no_results"))
+        else:
+            explore_cols = st.columns(4)
+            for idx, dest in enumerate(filtered):
+                with explore_cols[idx % 4]:
+                    st.markdown(f'<div class="gallery-caption">{destination_name(dest)}</div>', unsafe_allow_html=True)
+                    render_photo(dest, height_px=120)
+                    if st.button(t("explore_open"), key=f"explore_open_{dest.destination_id}",
+                                 use_container_width=True):
+                        open_detail(dest.destination_id, None)
+                    if st.button(t("explore_add_to_compare"), key=f"explore_add_{dest.destination_id}",
+                                 use_container_width=True):
+                        name = destination_name(dest)
+                        st.session_state["pending_add_to_compare"] = name
+                        st.toast(t("explore_added_to_compare").format(name=name))
+                        st.rerun()
 
 # --- Contextual data: MSZ explainer + Power BI link ----------------------
 with tab_info:
-    st.subheader(t("msz_info_header"))
-    st.caption(t("msz_info_caption"))
+    if _require_login():
+        st.subheader(t("msz_info_header"))
+        st.caption(t("msz_info_caption"))
 
-    st.subheader(t("bi_header"))
-    st.caption(t("bi_link_caption"))
-    report_url = os.environ.get("POWERBI_REPORT_URL", "")
-    if report_url:
-        st.link_button(f"📊 {t('bi_open_link')}", report_url)
-    else:
-        st.warning(t("bi_missing"))
+        st.subheader(t("bi_header"))
+        st.caption(t("bi_link_caption"))
+        report_url = os.environ.get("POWERBI_REPORT_URL", "")
+        if report_url:
+            st.link_button(f"📊 {t('bi_open_link')}", report_url)
+        else:
+            st.warning(t("bi_missing"))
 
-# --- Account: optional login/register, persists Favorites to the DB -----
+# --- Account: favorites list, persisted to the DB -----
 with tab_account:
-    if st.session_state.get("authentication_status"):
+    if _require_login():
         st.subheader(t("account_favorites_header"))
-        st.write(t("account_logged_in_as").format(
-            name=st.session_state.get("name", ""), username=st.session_state.get("username", "")))
-        authenticator.logout(t("account_logout"), location="main", key="account_logout_btn")
 
         favorites = st.session_state["favorites"]
         if not favorites:
@@ -566,9 +664,6 @@ with tab_account:
                     if st.button(t("card_view_details"), key=f"acct_view_{d.destination_id}",
                                  use_container_width=True):
                         open_detail(d.destination_id, None)
-    else:
-        st.caption(t("account_not_logged_in_intro"))
-        st.info(f"👈 {t('account_use_sidebar')}")
 
 # --- About / how it works tab --------------------------------------------------
 with tab_about:
@@ -579,54 +674,55 @@ with tab_about:
 
 # --- Admin tab --------------------------------------------------
 with tab_admin:
-    admin_password = os.environ.get("ADMIN_PASSWORD", "admin")
-    if not st.session_state.get("is_admin"):
-        st.subheader(t("admin_login_header"))
-        pw = st.text_input(t("admin_password"), type="password")
-        if st.button(t("admin_login_btn")):
-            if pw == admin_password:
-                st.session_state["is_admin"] = True
-                st.rerun()
-            else:
-                st.error(t("admin_login_error"))
-    else:
-        st.subheader(t("admin_risks_header"))
-        if st.button(t("admin_logout")):
-            st.session_state["is_admin"] = False
-            st.rerun()
-
-        risks = session.query(SeasonalRisk).all()
-        for risk in risks:
-            dest = session.get(Destination, risk.destination_id)
-            cols = st.columns([3, 2, 3, 1, 1])
-            cols[0].write(destination_name(dest))
-            cols[1].write(month_name(risk.month))
-            cols[2].write(risk.risk_type_pl if st.session_state["lang"] == "pl" else risk.risk_type_en)
-            cols[3].write(risk.severity)
-            if cols[4].button(t("admin_delete"), key=f"del_{risk.risk_id}"):
-                session.delete(risk)
-                session.commit()
+    if _require_login():
+        admin_password = os.environ.get("ADMIN_PASSWORD", "admin")
+        if not st.session_state.get("is_admin"):
+            st.subheader(t("admin_login_header"))
+            pw = st.text_input(t("admin_password"), type="password")
+            if st.button(t("admin_login_btn")):
+                if pw == admin_password:
+                    st.session_state["is_admin"] = True
+                    st.rerun()
+                else:
+                    st.error(t("admin_login_error"))
+        else:
+            st.subheader(t("admin_risks_header"))
+            if st.button(t("admin_logout")):
+                st.session_state["is_admin"] = False
                 st.rerun()
 
-        st.divider()
-        st.markdown(f"**{t('admin_add_risk')}**")
-        with st.form("add_risk_form", clear_on_submit=True):
-            dest_options = {destination_name(d): d.destination_id for d in all_destinations}
-            new_dest_name = st.selectbox(t("col_destination"), options=list(dest_options.keys()))
-            new_month = st.selectbox(t("form_travel_month"), options=list(range(1, 13)),
-                                      format_func=month_name)
-            new_type = st.text_input(t("col_seasonal_risk"))
-            new_severity = st.slider(t("results_score"), min_value=1, max_value=3, value=2)
-            if st.form_submit_button(t("admin_add_risk")):
-                session.add(SeasonalRisk(
-                    destination_id=dest_options[new_dest_name],
-                    month=new_month,
-                    risk_type_en=new_type, risk_type_pl=new_type,
-                    severity=new_severity,
-                ))
-                session.commit()
-                st.success(t("admin_saved"))
-                st.rerun()
+            risks = session.query(SeasonalRisk).all()
+            for risk in risks:
+                dest = session.get(Destination, risk.destination_id)
+                cols = st.columns([3, 2, 3, 1, 1])
+                cols[0].write(destination_name(dest))
+                cols[1].write(month_name(risk.month))
+                cols[2].write(risk.risk_type_pl if st.session_state["lang"] == "pl" else risk.risk_type_en)
+                cols[3].write(risk.severity)
+                if cols[4].button(t("admin_delete"), key=f"del_{risk.risk_id}"):
+                    session.delete(risk)
+                    session.commit()
+                    st.rerun()
+
+            st.divider()
+            st.markdown(f"**{t('admin_add_risk')}**")
+            with st.form("add_risk_form", clear_on_submit=True):
+                dest_options = {destination_name(d): d.destination_id for d in all_destinations}
+                new_dest_name = st.selectbox(t("col_destination"), options=list(dest_options.keys()))
+                new_month = st.selectbox(t("form_travel_month"), options=list(range(1, 13)),
+                                          format_func=month_name)
+                new_type = st.text_input(t("col_seasonal_risk"))
+                new_severity = st.slider(t("results_score"), min_value=1, max_value=3, value=2)
+                if st.form_submit_button(t("admin_add_risk")):
+                    session.add(SeasonalRisk(
+                        destination_id=dest_options[new_dest_name],
+                        month=new_month,
+                        risk_type_en=new_type, risk_type_pl=new_type,
+                        severity=new_severity,
+                    ))
+                    session.commit()
+                    st.success(t("admin_saved"))
+                    st.rerun()
 
 # --- footer --------------------------------------------------
 rates_fetched = [d.currency_rate.fetched_at for d in all_destinations

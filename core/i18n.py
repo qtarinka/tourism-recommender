@@ -250,33 +250,22 @@ STRINGS = {
     },
     "about_accounts_header": {"pl": "Konta użytkowników i zapisywanie wyników", "en": "User accounts & saving results"},
     "about_accounts_text": {
-        "pl": "Konto jest całkowicie opcjonalne — rekomendacje, porównania i eksploracja "
-              "kierunków działają bez logowania, a przycisk „Zapisz” zawsze zapisuje wybór "
-              "przynajmniej w bieżącej sesji przeglądarki. Jeśli założysz konto w zakładce "
-              "„Konto”, Twoje zapisane kierunki są dodatkowo zapisywane w bazie danych i wracają "
-              "przy kolejnej wizycie (nawet po zamknięciu przeglądarki) — hasła są haszowane "
-              "(bcrypt), a logowanie działa przez podpisany plik cookie. Bez konta zapisane "
-              "kierunki znikają po zamknięciu karty przeglądarki.",
-        "en": "An account is entirely optional — recommendations, comparisons, and exploring "
-              "destinations all work without logging in, and the “Save” button always keeps your "
-              "pick for at least the current browser session. If you create an account in the "
-              "“Account” tab, your saved destinations are additionally stored in the database and "
-              "come back on your next visit (even after closing the browser) — passwords are "
-              "hashed (bcrypt) and login works via a signed cookie. Without an account, saved "
-              "destinations disappear when you close the browser tab.",
-    },
-    "account_not_logged_in_intro": {
-        "pl": "Zaloguj się, aby Twoje zapisane kierunki wracały przy kolejnej wizycie. Bez "
-              "konta „Zapisz” nadal działa, ale tylko w tej sesji przeglądarki.",
-        "en": "Log in so your saved destinations come back on your next visit. Without an "
-              "account, “Save” still works, just only for this browser session.",
+        "pl": "Konto jest wymagane, aby korzystać z aplikacji — ustawianie kryteriów podróży, "
+              "ranking, porównania i eksploracja kierunków są dostępne dopiero po zalogowaniu. "
+              "Dzięki temu Twoje zapisane kierunki są zawsze przypisane do Twojego konta w bazie "
+              "danych i wracają przy każdej kolejnej wizycie, nawet po zamknięciu przeglądarki — "
+              "hasła są haszowane (bcrypt), a logowanie działa przez podpisany plik cookie. Załóż "
+              "konto lub zaloguj się w panelu bocznym; swój profil (imię, e-mail, hasło) możesz "
+              "edytować z przycisku „👤 Profil” nad banerem strony głównej.",
+        "en": "An account is required to use the app — setting travel criteria, ranking, "
+              "comparisons, and exploring destinations are all only available once logged in. "
+              "That means your saved destinations are always tied to your account in the "
+              "database and come back on every visit, even after closing the browser — passwords "
+              "are hashed (bcrypt) and login works via a signed cookie. Create an account or log "
+              "in from the sidebar; edit your profile (name, email, password) from the “👤 "
+              "Profile” button above the homepage banner.",
     },
     "account_sidebar_prompt": {"pl": "Zaloguj się / Zarejestruj się", "en": "Log in / Register"},
-    "account_use_sidebar": {
-        "pl": "Użyj panelu „👤 Zaloguj się / Zarejestruj się” w lewym pasku bocznym, aby się "
-              "zalogować lub założyć konto.",
-        "en": "Use the “👤 Log in / Register” panel in the left sidebar to log in or create an account.",
-    },
     "account_login_error": {"pl": "Nieprawidłowa nazwa użytkownika lub hasło.", "en": "Incorrect username or password."},
     "account_switch_to_register": {"pl": "Nie masz konta? Zarejestruj się", "en": "Don't have an account? Register"},
     "account_switch_to_login": {"pl": "Masz już konto? Zaloguj się", "en": "Already have an account? Log in"},
@@ -297,6 +286,24 @@ STRINGS = {
               "kierunku w zakładce Wyniki lub Poznaj kierunki.",
         "en": "You haven't saved any destinations yet. Click “☆ Save” on any destination in the "
               "Results or Explore tab.",
+    },
+    "locked_feature_message": {
+        "pl": "🔒 Zaloguj się w panelu bocznym, aby korzystać z tej funkcji.",
+        "en": "🔒 Log in from the sidebar to use this feature.",
+    },
+    "sidebar_login_required": {
+        "pl": "🔒 Zaloguj się, aby ustawić kryteria podróży i korzystać z aplikacji.",
+        "en": "🔒 Log in to set your travel criteria and use the app.",
+    },
+    "nav_profile": {"pl": "Profil", "en": "Profile"},
+    "profile_dialog_title": {"pl": "Twój profil", "en": "Your profile"},
+    "profile_name_label": {"pl": "Imię i nazwisko", "en": "Full name"},
+    "profile_email_label": {"pl": "E-mail", "en": "Email"},
+    "profile_save_btn": {"pl": "Zapisz zmiany", "en": "Save changes"},
+    "profile_saved": {"pl": "Zapisano zmiany profilu.", "en": "Profile changes saved."},
+    "profile_password_changed": {"pl": "Hasło zostało zmienione.", "en": "Password changed."},
+    "profile_password_error": {
+        "pl": "Nie udało się zmienić hasła: {error}", "en": "Couldn't change the password: {error}",
     },
 }
 
