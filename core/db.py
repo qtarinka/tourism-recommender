@@ -45,8 +45,21 @@ class Destination(Base):
                                  cascade="all, delete-orphan")
     seasonal_risks = relationship("SeasonalRisk", back_populates="destination",
                                    cascade="all, delete-orphan")
-    currency_rate = relationship("CurrencyRate", back_populates="destination", uselist=False,
-                                  cascade="all, delete-orphan")
+    # A list, not a single row: the scheduler (core/etl.py) inserts a new
+    # CurrencyRate every ETL run rather than overwriting one, so historical
+    # rate trends accumulate for Power BI. Nothing in this app should read
+    # currency_rates directly to mean "the current rate" -- use
+    # current_currency_rate below, which is the one actually meant for that.
+    currency_rates = relationship("CurrencyRate", back_populates="destination",
+                                   cascade="all, delete-orphan", order_by="CurrencyRate.fetched_at")
+
+    @property
+    def current_currency_rate(self):
+        """Most recently fetched CurrencyRate row, or None if none exist
+        yet. This is what every display of "the" exchange rate should
+        read -- currency_rates itself is the full history, not a single
+        current value."""
+        return self.currency_rates[-1] if self.currency_rates else None
 
 
 class GusTourismStat(Base):
@@ -99,7 +112,7 @@ class CurrencyRate(Base):
     rate_to_pln = Column(Float, nullable=False)
     fetched_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-    destination = relationship("Destination", back_populates="currency_rate")
+    destination = relationship("Destination", back_populates="currency_rates")
 
 
 class User(Base):

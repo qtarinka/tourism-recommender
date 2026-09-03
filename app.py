@@ -484,7 +484,7 @@ def _detail_dialog(dest_id: int, scored):
         st.caption(t("detail_general_info_missing"))
 
     st.markdown(f'<div class="detail-section-header">💱 {t("detail_currency_header")}</div>', unsafe_allow_html=True)
-    rate = dest.currency_rate.rate_to_pln if dest.currency_rate else None
+    rate = dest.current_currency_rate.rate_to_pln if dest.current_currency_rate else None
     rate_text = f" — 1 {dest.currency_code} ≈ {rate:.4f} PLN" if rate else ""
     st.write(f"{t('col_currency')}: {dest.currency_code}{rate_text}")
 
@@ -624,7 +624,7 @@ def render_result_card(scored, mode: str):
             for matched, pos_key, neg_key in scored.explanation_items():
                 icon = "✅" if matched else "⚠️"
                 st.caption(f"{icon} {t(pos_key if matched else neg_key)}")
-            rate = dest.currency_rate.rate_to_pln if dest.currency_rate else None
+            rate = dest.current_currency_rate.rate_to_pln if dest.current_currency_rate else None
             facts = f"💱 {dest.currency_code}" + (f" (1 ≈ {rate:.4f} PLN)" if rate else "")
             facts += f" &nbsp;·&nbsp; 🛂 MSZ {scored.current_msz_level}/4"
             st.markdown(f'<span style="font-size:0.85rem;color:#666">{facts}</span>', unsafe_allow_html=True)
@@ -838,8 +838,8 @@ if active_page == "admin" and st.session_state.get("is_admin"):
             st.rerun()
 
 # --- footer --------------------------------------------------
-rates_fetched = [d.currency_rate.fetched_at for d in all_destinations
-                  if d.currency_rate and d.currency_rate.rate_to_pln]
+rates_fetched = [d.current_currency_rate.fetched_at for d in all_destinations
+                  if d.current_currency_rate and d.current_currency_rate.rate_to_pln]
 last_refresh = max(rates_fetched) if rates_fetched else None
 st.divider()
 st.caption(f"{t('footer_last_refresh')}: {last_refresh if last_refresh else t('footer_never')}")

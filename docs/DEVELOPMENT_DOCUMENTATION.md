@@ -1015,3 +1015,105 @@ crash from the Explore→sidebar "add to compare" action.
   dialog returns you to the same tab and the same search results, but the
   page may have scrolled to the top rather than back to exactly where you
   were.
+
+## 14. Power BI model expansion and historical trend data
+
+Requested as a follow-up once the app was live on Neon (see the deployment
+work earlier in this project): extend the Power BI model with the new
+auth tables so login activity and Favorites can be analyzed alongside the
+existing destination/GUS/MSZ data, without ever exposing usernames or
+emails in a visual; and make `currency_rates`/`msz_safety_warnings`
+actually accumulate history over time instead of each ETL run overwriting
+the previous snapshot, since a Power BI trend visual needs more than one
+point in time to be a trend.
+
+**Privacy-safe Power BI views (Neon).** Rather than relying on report
+authors to simply not drag `username`/`email` into a visual — a real but
+fragile convention, one wrong field pick away from a leak — five SQL
+views were created directly on the Neon database, and these (not the raw
+`users`/`user_favorites`/`user_login_log` tables) are what the Power BI
+model should import:
+
+- `bi_users` — `user_id, is_admin, is_blocked, created_at` only.
+  `username` and `email` don't exist as columns in this view at all, so
+  it's structurally impossible for a visual built against it to show
+  them — stronger than a "don't do that" convention, since there's
+  nothing to accidentally drag in.
+- `bi_user_favorites` — `favorite_id, user_id, destination_id, saved_at`
+  (the raw table already carries no PII, but importing the `bi_` view
+  keeps "only import `bi_*`" a single simple rule to follow rather than
+  three different tables with different levels of safety).
+- `bi_user_login_log` — `log_id, user_id, logged_in_at` (same reasoning).
+- `bi_login_counts_by_day` and `bi_most_favorited_destinations` — two
+  ready-made aggregates matching the two example visuals requested
+  ("login counts, most-favorited destinations by count") directly, so
+  those two specific charts need zero DAX; the three views above remain
+  available for anything that needs the underlying relationships instead
+  (e.g. cross-filtering favorites by destination region).
+
+**Relationships** (built in the Power BI model against the views above,
+not the raw tables): `bi_user_favorites.destination_id →
+destinations.destination_id`, `bi_user_favorites.user_id →
+bi_users.user_id`, `bi_user_login_log.user_id → bi_users.user_id` — as
+requested, all many-to-one from the fact-like tables up to their
+dimensions.
+
+**Power BI Desktop itself is a native Windows GUI application, and I have
+no desktop-automation tool** — only browser automation (for the Streamlit
+Cloud/GitHub/Neon web consoles used throughout this project's deployment)
+and shell access. Confirmed Power BI Desktop is installed
+(`Microsoft.MicrosoftPowerBIDesktop`, via the Microsoft Store) but wasn't
+running at the time, so even the more advanced option — scripting the
+model through its local Analysis Services instance while the file is open
+(Tabular Object Model over PowerShell, a real and sometimes-used
+technique) — wasn't available without first asking the user to open the
+file, and was set aside in favor of not risking their real thesis
+`.pbix` on a change I can't visually verify. The actual "Get Data →
+PostgreSQL → point at the `bi_*` views → draw the three relationships"
+steps in Power BI Desktop's Model view are therefore a manual step,
+guided rather than performed directly. (For reference, only two other
+places in this project ever drove a GUI: Streamlit Cloud's and Neon's own
+web consoles, both via ordinary browser automation — Power BI Desktop
+being a native app rather than a web app is the actual reason this one
+step is different, not a change in approach.)
+
+**Historical accumulation for `currency_rates` and `msz_safety_warnings`.**
+Checked both before changing anything: `refresh_msz_warnings()`
+(`core/etl.py`) already inserted a fresh `MszSafetyWarning` row per
+matched feed entry every run with no existing-row lookup, so it was
+already accumulating correctly (and, since `Destination.msz_warnings`
+was already a list relationship, nothing downstream assumed a single
+row) — no change needed there. `refresh_currency_rates()` was the one
+that actually overwrote: it looked up the existing `CurrencyRate` row for
+each destination and updated `rate_to_pln`/`fetched_at` in place instead
+of inserting, so the table only ever held one row per destination and
+`fetched_at` was always "now," never a real history.
+
+Fixed by always inserting a new `CurrencyRate` row per destination per
+run. That change alone would have broken the app, though: `core/db.py`'s
+`Destination.currency_rate` relationship was declared `uselist=False` — a
+real one-to-one assumption three call sites in `app.py` (both currency
+displays and the footer's "last refreshed" timestamp) and one test relied
+on. Once a second historical row exists per destination, that assumption
+no longer holds. Renamed the relationship to `currency_rates` (a
+list, ordered by `fetched_at`) and added a
+`Destination.current_currency_rate` property (`currency_rates[-1]`, the
+most recent row) — every place that used to read `dest.currency_rate` to
+mean "the current rate" now reads `dest.current_currency_rate` instead,
+which is genuinely what those call sites always meant. `schema.sql`
+needed no change: `currency_rates.destination_id` was never
+database-level `UNIQUE`, only assumed singular by the application code.
+
+**Verification performed:** a new test
+(`test_refresh_currency_rates_inserts_new_row_each_run_not_updates`)
+calls `refresh_currency_rates()` twice against an isolated DB with two
+different mocked rates and asserts both rows exist afterward, rather than
+relying on that being implied by other tests. Full suite (45 tests)
+green. Also run for real, twice, against both the local Postgres and the
+live Neon database — `currency_rates` went from 20 rows (one per
+destination) to 40 on each, confirmed via a direct count query, and
+`Destination.current_currency_rate` was checked live to return the
+newer of the two rows with the correct `rate_to_pln`/`fetched_at`, not an
+arbitrary one. The running local Streamlit app was confirmed still
+responding (no exception) after the model change, since it was live
+through the whole edit.

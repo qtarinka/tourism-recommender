@@ -16,7 +16,6 @@ documented scope gap, not a bug.
 """
 import logging
 import os
-from datetime import datetime, timezone
 
 import requests
 
@@ -45,6 +44,12 @@ def fetch_nbp_rate(currency_code: str):
 
 
 def refresh_currency_rates():
+    """Inserts a new CurrencyRate row per destination every run rather
+    than updating one in place, so the table accumulates a genuine rate
+    history over time (each row's fetched_at is one point in that
+    history) instead of only ever holding the latest value. The app reads
+    "the current rate" via Destination.current_currency_rate (the most
+    recent row), not by assuming there's only one row -- see core/db.py."""
     session = get_session()
     try:
         destinations = session.query(Destination).all()
@@ -58,21 +63,15 @@ def refresh_currency_rates():
             else:
                 log.warning("Could not fetch NBP rate for %s; leaving previous value", code)
 
-        updated = 0
+        inserted = 0
         for dest in destinations:
             rate = rate_by_code.get(dest.currency_code)
             if rate is None:
                 continue
-            row = session.query(CurrencyRate).filter_by(destination_id=dest.destination_id).first()
-            if row is None:
-                row = CurrencyRate(destination_id=dest.destination_id, rate_to_pln=rate)
-                session.add(row)
-            else:
-                row.rate_to_pln = rate
-                row.fetched_at = datetime.now(timezone.utc)
-            updated += 1
+            session.add(CurrencyRate(destination_id=dest.destination_id, rate_to_pln=rate))
+            inserted += 1
         session.commit()
-        log.info("Currency rates refreshed for %d destinations.", updated)
+        log.info("Currency rates: %d new historical rows inserted.", inserted)
     finally:
         session.close()
 

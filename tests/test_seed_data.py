@@ -24,4 +24,4 @@ def test_every_destination_has_gus_stats_and_msz_warning(db_session):
     for dest in db_session.query(Destination).all():
         assert dest.gus_stats is not None
         assert len(dest.msz_warnings) >= 1
-        assert dest.currency_rate is not None
+        assert dest.current_currency_rate is not None

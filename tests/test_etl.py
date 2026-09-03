@@ -3,6 +3,7 @@ from unittest.mock import patch, MagicMock
 import requests
 
 from core import etl
+from core.db import Destination, CurrencyRate
 
 
 def _fake_response(mid):
@@ -47,3 +48,26 @@ def test_refresh_msz_warnings_skips_when_url_unset():
     with patch.object(etl, "MSZ_RSS_URL", ""):
         # Should return immediately without touching the database or network.
         etl.refresh_msz_warnings()
+
+
+def test_refresh_currency_rates_inserts_new_row_each_run_not_updates(db_session):
+    """Historical trend data (for Power BI) requires every ETL run to add
+    a new row rather than overwrite the previous one -- this is the
+    behavior that was requested and changed; regression-guard it
+    directly rather than relying on it being implied by other tests."""
+    dest = Destination(name_en="Testland", name_pl="Testlandia", country_en="Testland",
+                        country_pl="Testlandia", region="europe", currency_code="EUR")
+    db_session.add(dest)
+    db_session.commit()
+    db_session.refresh(dest)
+
+    with patch.object(etl, "get_session", return_value=db_session), \
+         patch.object(etl, "fetch_nbp_rate", return_value=4.30):
+        etl.refresh_currency_rates()
+    with patch.object(etl, "get_session", return_value=db_session), \
+         patch.object(etl, "fetch_nbp_rate", return_value=4.35):
+        etl.refresh_currency_rates()
+
+    rows = db_session.query(CurrencyRate).filter_by(destination_id=dest.destination_id).all()
+    assert len(rows) == 2
+    assert {r.rate_to_pln for r in rows} == {4.30, 4.35}
