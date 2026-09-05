@@ -475,7 +475,7 @@ def _detail_dialog(dest_id: int, scored):
             st.rerun()
 
     st.markdown(f'<div class="detail-section-header">📖 {t("detail_general_info_header")}</div>', unsafe_allow_html=True)
-    summary = get_country_summary(dest.name_en)
+    summary = get_country_summary(dest.name_en, dest.name_pl, lang)
     if summary:
         st.write(summary["extract"])
         if summary.get("page_url"):

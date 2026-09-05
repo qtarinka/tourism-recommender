@@ -114,13 +114,16 @@ def get_destination_photos(destination_name_en: str, limit: int = 3):
 
 
 @st.cache_data(ttl=60 * 60 * 24, show_spinner=False)
-def _fetch_country_extract(country_name_en: str):
+def _fetch_country_extract(country_name: str, lang: str = "en"):
     """Same failure-doesn't-cache contract as _fetch_page_image (see its
-    docstring) -- raises rather than returning None on network failure."""
+    docstring) -- raises rather than returning None on network failure.
+    `lang` selects which language Wikipedia to query ("en"/"pl"); it's part
+    of st.cache_data's argument-based cache key, so the English and Polish
+    extracts for the same country are cached independently."""
     resp = requests.get(
-        WIKI_API_URL,
+        f"https://{lang}.wikipedia.org/w/api.php",
         params={
-            "action": "query", "titles": country_name_en, "prop": "extracts|info",
+            "action": "query", "titles": country_name, "prop": "extracts|info",
             "inprop": "url", "exintro": 1, "explaintext": 1, "exsentences": 3,
             "format": "json", "redirects": 1,
         },
@@ -131,14 +134,9 @@ def _fetch_country_extract(country_name_en: str):
     return resp.json()
 
 
-def get_country_summary(country_name_en: str):
-    """Returns {"extract", "page_url"} -- a short (~3 sentence), genuinely
-    sourced intro paragraph about the country from Wikipedia's own lead
-    section, or None if unavailable. Used for the destination detail
-    view's "General information" section: real, attributable content
-    rather than an invented country description."""
+def _extract_summary(country_name: str, lang: str):
     try:
-        data = _fetch_country_extract(country_name_en)
+        data = _fetch_country_extract(country_name, lang)
     except requests.RequestException:
         return None
     pages = data.get("query", {}).get("pages", {})
@@ -147,3 +145,24 @@ def get_country_summary(country_name_en: str):
     if not page or not extract:
         return None
     return {"extract": extract, "page_url": page.get("fullurl")}
+
+
+def get_country_summary(country_name_en: str, country_name_pl: str = None, lang: str = "en"):
+    """Returns {"extract", "page_url"} -- a short (~3 sentence), genuinely
+    sourced intro paragraph about the country from Wikipedia's own lead
+    section, or None if unavailable. Used for the destination detail
+    view's "General information" section: real, attributable content
+    rather than an invented country description.
+
+    Follows the same _en/_pl selection convention used throughout the app:
+    when `lang` is "pl" and a Polish title is given, the Polish Wikipedia
+    is queried first so this section switches with the rest of the UI.
+    Falls back to the English Wikipedia (and the English title) if no
+    Polish article exists, or its extract comes back empty, so a missing
+    Polish source never leaves the section blank -- it just shows the
+    English summary instead."""
+    if lang == "pl" and country_name_pl:
+        summary = _extract_summary(country_name_pl, "pl")
+        if summary:
+            return summary
+    return _extract_summary(country_name_en, "en")
